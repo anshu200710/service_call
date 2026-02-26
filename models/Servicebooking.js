@@ -1,12 +1,16 @@
 /**
- * ServiceBooking.model.js  (v2)
+ * ServiceBooking.model.js  (v3 — JSB Motors Advanced Flow)
  * ================================
- * Mongoose model for JCB outbound call outcomes.
+ * Mongoose model for JSB Motors outbound call outcomes.
  *
- * v2 additions:
- *   • rescheduledDateISO — machine-readable ISO date "2025-03-03"
- *   • callbackDateISO    — machine-readable ISO date "2025-03-03"
- *   Both fields let you sort/filter by real calendar dates in MongoDB.
+ * v3 additions (over v2):
+ *   • outcome enum updated  — added 'already_done'
+ *   • assignedBranchName    — matched service center name
+ *   • assignedBranchCode    — branch code e.g. "DEL01"
+ *   • assignedBranchCity    — city of matched branch
+ *   • confirmedServiceDate  — resolved display date for confirmed bookings
+ *   • alreadyDoneDetails    — raw speech captured when customer says service already done
+ *   • Removed rescheduled / callback fields (flow no longer uses them)
  */
 
 import mongoose from 'mongoose';
@@ -29,74 +33,88 @@ const CallTurnSchema = new Schema(
 /* ── Main schema ─────────────────────────────────────────────────── */
 const ServiceBookingSchema = new Schema(
   {
-    /* Call metadata */
+    /* ── Call metadata ───────────────────────────────────────────── */
     callSid: {
       type: String, required: true, unique: true, index: true, trim: true,
     },
 
-    /* Customer */
+    /* ── Customer ────────────────────────────────────────────────── */
     customerName:  { type: String, required: true, trim: true },
-    customerPhone: { type: String, default: null, index: true, trim: true },
+    customerPhone: { type: String, default: null,  index: true, trim: true },
 
-    /* Machine / service */
+    /* ── Machine / service ───────────────────────────────────────── */
     machineModel:    { type: String, required: true, trim: true },
     machineNumber:   { type: String, required: true, trim: true },
     serviceType:     { type: String, required: true, trim: true },
     dueDateOriginal: { type: String, required: true },
 
-    /* Outcome */
+    /* ── Outcome ─────────────────────────────────────────────────── */
     outcome: {
       type:     String,
       required: true,
-      enum:     ['confirmed', 'rescheduled', 'callback', 'rejected', 'no_response'],
+      enum:     ['confirmed', 'rejected', 'already_done', 'no_response'],
       index:    true,
     },
 
-    /* ── Outcome-specific fields ───────────────────────────────── */
-
-    // confirmed
-    confirmedServiceDate: { type: String, default: null },
-
-    // rescheduled
-    rescheduledDate:    {
+    /* ── confirmed ───────────────────────────────────────────────── */
+    confirmedServiceDate: {
       type:    String,
       default: null,
-      // Stores resolved display string e.g. "Monday, 3 March 2025"
+      // Resolved display date e.g. "Monday, 3 March 2025"
     },
-    rescheduledDateISO: {
+    confirmedServiceDateISO: {
       type:    String,
       default: null,
-      // Stores ISO date string e.g. "2025-03-03" — sortable in MongoDB
+      // ISO-8601 e.g. "2025-03-03" — sortable in MongoDB
     },
 
-    // callback
-    callbackDate:    {
+    /* ── Branch assignment (populated on confirmed outcome) ──────── */
+    assignedBranchName: {
       type:    String,
       default: null,
-      // e.g. "Wednesday, 5 March 2025"
+      trim:    true,
+      // e.g. "Delhi Central"
     },
-    callbackDateISO: {
+    assignedBranchCode: {
       type:    String,
       default: null,
-      // e.g. "2025-03-05"
+      trim:    true,
+      // e.g. "DEL01"
+    },
+    assignedBranchCity: {
+      type:    String,
+      default: null,
+      trim:    true,
+      // e.g. "Delhi"
     },
 
-    // rejected
-    rejectionReason: { type: String, default: null },
+    /* ── rejected ────────────────────────────────────────────────── */
+    rejectionReason: {
+      type:    String,
+      default: null,
+      // Raw speech captured from customer when they reject
+    },
 
-    /* Call stats */
+    /* ── already_done ────────────────────────────────────────────── */
+    alreadyDoneDetails: {
+      type:    String,
+      default: null,
+      // Raw speech: "kab, kahan, kaunsi service karwai"
+    },
+
+    /* ── Call stats ──────────────────────────────────────────────── */
     totalTurns:          { type: Number, default: 0    },
     callDurationSeconds: { type: Number, default: null },
 
-    /* Turn log */
+    /* ── Turn log ────────────────────────────────────────────────── */
     turns: { type: [CallTurnSchema], default: [] },
 
-    /* Timestamps */
+    /* ── Timestamps ──────────────────────────────────────────────── */
     callStartedAt: { type: Date, default: null },
     callEndedAt:   { type: Date, default: null },
   },
   {
-    timestamps: true,  // createdAt + updatedAt
+    timestamps: true,   // adds createdAt + updatedAt automatically
     versionKey: false,
   }
 );
@@ -104,11 +122,10 @@ const ServiceBookingSchema = new Schema(
 /* ── Indexes ─────────────────────────────────────────────────────── */
 ServiceBookingSchema.index({ outcome: 1, createdAt: -1 });
 ServiceBookingSchema.index({ customerPhone: 1, createdAt: -1 });
-// Sort callbacks / reschedules by actual date in dashboards
-ServiceBookingSchema.index({ rescheduledDateISO: 1 });
-ServiceBookingSchema.index({ callbackDateISO: 1 });
+ServiceBookingSchema.index({ assignedBranchCode: 1, createdAt: -1 });
+ServiceBookingSchema.index({ confirmedServiceDateISO: 1 });
 
-/* ── Virtual ─────────────────────────────────────────────────────── */
+/* ── Virtuals ────────────────────────────────────────────────────── */
 ServiceBookingSchema.virtual('durationMinutes').get(function () {
   if (!this.callDurationSeconds) return null;
   return (this.callDurationSeconds / 60).toFixed(1);
