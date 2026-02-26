@@ -445,6 +445,10 @@ const REJECT_PATTERNS = [
   'nahi','nahin',"don't",'dont','no','nope','cancel',
   'नहीं चाहिए','नहीं करना','मत करो','मत कर','छोड़ दो','बंद करो',
   'ज़रूरत नहीं','अभी नहीं','कैंसल कर दो','नहीं','ना',
+  // no-date rejections
+  'koi tarikh nahi','koi date nahi','abhi koi date nahi','date nahi dunga',
+  'tarikh nahi bataunga','koi bhi tarikh nahi',
+  'कोई भी तारीख नहीं','कोई तारीख नहीं','तारीख नहीं दूंगा','कोई दिन नहीं','अभी कोई तारीख नहीं',
 ];
 
 const ALREADY_DONE_PATTERNS = [
@@ -550,13 +554,13 @@ export function extractPreferredDate(raw) {
     return `${dayMonth[1]} ${hindiMonth}`;
   }
 
-  const numBefore = t.match(/\b(\d{1,2})\s+(?:तारीख|tarikh|date)\b/);
+  const numBefore = t.match(/(?:^|\s)(\d{1,2})\s+(?:तारीख|tarikh|date)(?:\s|$|को|के)/u);
   if (numBefore) return `${numBefore[1]} तारीख`;
 
-  const numAfter = t.match(/(?:तारीख|tarikh|date)\s+(\d{1,2})\b/);
+  const numAfter = t.match(/(?:तारीख|tarikh|date)\s+(\d{1,2})(?:\s|$)/u);
   if (numAfter) return `${numAfter[1]} तारीख`;
 
-  const numKo = t.match(/\b(\d{1,2})\s+(?:ko|को)\b/);
+  const numKo = t.match(/(?:^|\s)(\d{1,2})\s+(?:ko|को)(?:\s|$)/u);
   if (numKo) return `${numKo[1]} तारीख`;
 
   const bookingCtx = t.match(/\b(\d{1,2})\s+(?:ke\s+liye|को\s+बुक|तक|से\s+पहले)/);
@@ -765,13 +769,20 @@ export function processUserInput(userText, sessionData) {
 
     /* ── STEP 3: Reason / objection handling ───────────────────────── */
     case 'awaiting_reason': {
-      if (intent === INTENT.CONFIRM || intent === INTENT.RESCHEDULE) {
+      // RESCHEDULE with an explicit date → fast-track to date confirm
+      if (intent === INTENT.RESCHEDULE) {
         const preferredDate = extractPreferredDate(userText);
         if (preferredDate) {
           const display = resolveDate(preferredDate)?.display || preferredDate;
           return result(R.confirmDate(name, display), 'awaiting_date_confirm', false, preferredDate);
         }
         return result(R.askDate(name), 'awaiting_date', false);
+      }
+      // FIX: bare CONFIRM in awaiting_reason ("हाँ हाँ मैंने बताया ना") means
+      // customer is acknowledging/frustrated — NOT confirming a booking.
+      // Move to persuasion first; let them say a date or agree properly.
+      if (intent === INTENT.CONFIRM) {
+        return result(R.persuasionFinal(name), 'awaiting_reason_persisted', false);
       }
       if (intent === INTENT.DRIVER_NOT_AVAILABLE) {
         return result(R.objectionDriverNotAvailable(name), 'awaiting_date', false);
@@ -834,8 +845,14 @@ export function processUserInput(userText, sessionData) {
         return result(R.confirmDate(name, display), 'awaiting_date_confirm', false, preferredDate);
       }
       if (intent === INTENT.REJECT) return result(R.rejected(name), 'ended', true);
+      // OBJECTION intents still valid here (customer keeps explaining)
+      if (intent === INTENT.DRIVER_NOT_AVAILABLE) return result(R.objectionDriverNotAvailable(name), state, false);
+      if (intent === INTENT.MACHINE_BUSY)          return result(R.objectionMachineBusy(name), state, false);
+      if (intent === INTENT.WORKING_FINE)           return result(R.objectionWorkingFine(name), state, false);
+      if (intent === INTENT.MONEY_ISSUE)            return result(R.objectionMoneyIssue(name), state, false);
+      if (intent === INTENT.CALL_LATER)             return result(R.objectionCallLater(name), state, false);
       return result(
-        `${name} ji, kaunsa din ya tarikh suvidhajanakl rahega? Jaise kal, somwar, 15 tarikh.`,
+        `${name} ji, kaunsa din ya tarikh suvidhajanakl rahega? Jaise kal, somwar, ya 15 tarikh boliye.`,
         state, false
       );
     }

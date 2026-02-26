@@ -114,6 +114,7 @@ function createSession(callData, callSid) {
     rejectionReason:    null,
     alreadyDoneDetails: null,
     persuasionCount:    0,
+    lowConfRetries:     0,  // consecutive low-confidence turns
 
     outcome:       null,
     silenceRetries: 0,
@@ -227,7 +228,7 @@ const V = {
 
   /* ── Greeting ── */
   greeting: (name, model, number, serviceType) =>
-    `Namaste ${name} ji! Main Rajesh bol raha hun, JSB Motors Service Center se. ` +
+    `Namaste ${name} ji! Main Rajesh Jcb Motors bol rahi hun, JCB Motors Service Center se. ` +
     `Aapki ${model} machine, number ${number}, ki ${serviceType} service due ho gayi hai. ` +
     `Kya main aapke liye yeh service is hafte mein book kar sakta hun?`,
 
@@ -471,16 +472,29 @@ async function handleUserInput(req, res) {
   }
 
   session.silenceRetries = 0;
+  session.lowConfRetries = 0; // voice detected — reset low-conf streak
 
   /* ── Low confidence ────────────────────────────────────────────────── */
   if (confidence < CFG.CONFIDENCE_THRESHOLD) {
-    log.warn('input', `Low confidence (${confidence.toFixed(2)})`, { callSid });
-    const repeatMsg = V.lowConfidence(name);
-    appendTurn(session, { customerSaid: rawSpeech, confidence, intent: 'low_confidence', systemReply: repeatMsg });
-    session.lastMessage = repeatMsg;
-    sessionStore.set(callSid, session);
-    buildVoiceResponse({ twiml, message: repeatMsg, actionUrl: action });
-    return sendTwiML(res, twiml);
+    session.lowConfRetries = (session.lowConfRetries || 0) + 1;
+    log.warn('input', `Low confidence (${confidence.toFixed(2)}) retry #${session.lowConfRetries}`, { callSid });
+
+    // After 2 consecutive low-conf turns, Twilio Hindi STT is struggling.
+    // Process the speech anyway rather than wasting more turns asking louder.
+    // Twilio often returns 0.00 for clear Hindi speech — don't discard it.
+    if (session.lowConfRetries >= 2 && rawSpeech.length > 1) {
+      log.info('input', `Forcing NLP on low-conf speech after ${session.lowConfRetries} retries`, { callSid });
+      // Fall through to NLP — do NOT return here
+    } else {
+      const repeatMsg = V.lowConfidence(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: 'low_confidence', systemReply: repeatMsg });
+      session.lastMessage = repeatMsg;
+      sessionStore.set(callSid, session);
+      buildVoiceResponse({ twiml, message: repeatMsg, actionUrl: action });
+      return sendTwiML(res, twiml);
+    }
+  } else {
+    session.lowConfRetries = 0; // reset on good confidence
   }
 
   /* ── NLP ───────────────────────────────────────────────────────────── */
