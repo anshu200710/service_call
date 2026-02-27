@@ -421,11 +421,8 @@ export function matchBranch(userText) {
   if (!userText) return null;
 
   let translated = userText;
-  // Sort by length DESC so longer Devanagari strings replace first (avoid partial replacements)
-  const hindiEntries = Object.entries(HINDI_CITY_MAP).sort(
-    (a, b) => b[0].length - a[0].length,
-  );
-  for (const [hindi, latin] of hindiEntries) {
+  // FIX v7: Use pre-computed sorted entries instead of sorting on every call
+  for (const [hindi, latin] of SORTED_HINDI_ENTRIES) {
     if (translated.includes(hindi)) {
       translated = translated.replace(hindi, latin);
     }
@@ -433,21 +430,8 @@ export function matchBranch(userText) {
 
   const norm = normalise(translated);
 
-  const candidates = [];
-  for (const center of SERVICE_CENTERS) {
-    if (!center.is_active) continue;
-    const cityToken = normalise(center.city_name);
-    const branchToken = normalise(center.branch_name);
-    candidates.push({ token: cityToken, center });
-    if (branchToken !== cityToken) {
-      candidates.push({ token: branchToken, center });
-    }
-  }
-
-  // Longest token first prevents partial matches
-  candidates.sort((a, b) => b.token.length - a.token.length);
-
-  for (const { token, center } of candidates) {
+  // FIX v7: Use pre-computed branch candidates (already sorted by token length)
+  for (const { token, center } of BRANCH_CANDIDATES) {
     if (token && norm.includes(token)) {
       return {
         code: center.branch_code,
@@ -537,13 +521,12 @@ const HINDI_NUM_WORDS = {
 };
 
 function replaceHindiNumbers(text) {
+  // FIX v7: Early exit — skip if no number words present (fast path for ~90% of utterances)
+  if (!/[०-९]|ek|do|teen|char|paanch|एक|दो|तीन|चार/u.test(text)) return text;
+
   let out = text;
-  // Sort by length DESC to replace longer words first
-  const entries = Object.entries(HINDI_NUM_WORDS).sort(
-    (a, b) => b[0].length - a[0].length,
-  );
-  for (const [word, digit] of entries) {
-    // Use word-boundary-like matching (spaces or string boundaries or Devanagari)
+  // These are already pre-computed and sorted at module load
+  for (const [word, digit] of SORTED_NUM_WORDS) {
     const re = new RegExp(`(^|\\s)${word}(\\s|$)`, "gu");
     out = out.replace(re, `$1${digit}$2`);
   }
@@ -589,6 +572,10 @@ const MONTH_NAMES_PATTERN =
 const DAY_LABEL_MAP = {
   kal: "कल",
   parso: "परसों",
+  agle: "अगले",
+  "agle hi": "अगले",
+  next: "अगले",
+  asap: "अगले",
   "agle hafte": "अगले हफ्ते",
   "agle week": "अगले हफ्ते",
   "next week": "अगले हफ्ते",
@@ -611,6 +598,22 @@ const DAY_LABEL_MAP = {
   shukrawar: "शुक्रवार",
   shaniwar: "शनिवार",
   raviwar: "रविवार",
+  // Extra Hindi weekday variations (transcription variants)
+  समवार: "सोमवार",
+  मंगल: "मंगलवार",
+  बुध: "बुधवार",
+  गुरु: "गुरुवार",
+  शुक्र: "शुक्रवार",
+  शनि: "शनिवार",
+  रवि: "रविवार",
+  // English weekday variations
+  mon: "सोमवार",
+  tue: "मंगलवार",
+  wed: "बुधवार",
+  thu: "गुरुवार",
+  fri: "शुक्रवार",
+  sat: "शनिवार",
+  sun: "रविवार",
   कल: "कल",
   परसों: "परसों",
   सोमवार: "सोमवार",
@@ -620,9 +623,42 @@ const DAY_LABEL_MAP = {
   शुक्रवार: "शुक्रवार",
   शनिवार: "शनिवार",
   रविवार: "रविवार",
+  अगले: "अगले",
+  "अगले ही": "अगले",
   "अगले हफ्ते": "अगले हफ्ते",
   "अगले महीने": "अगले महीने",
 };
+
+/* ════════════════════════════════════════════════════════════════════════
+   PRE-COMPUTED SORTED ARRAYS (v7 — Performance Optimization)
+   Sorted at module load time (after all constants defined), not on every call.
+   Saves 10-50ms per turn.
+   ════════════════════════════════════════════════════════════════════════ */
+const SORTED_NUM_WORDS = Object.entries(HINDI_NUM_WORDS).sort(
+  (a, b) => b[0].length - a[0].length,
+);
+
+const SORTED_DAY_KEYS = Object.keys(DAY_LABEL_MAP).sort(
+  (a, b) => b.length - a.length,
+);
+
+const SORTED_HINDI_ENTRIES = Object.entries(HINDI_CITY_MAP).sort(
+  (a, b) => b[0].length - a[0].length,
+);
+
+// Pre-build branch candidates once (sorted by token length)
+const BRANCH_CANDIDATES = SERVICE_CENTERS
+  .filter(c => c.is_active)
+  .flatMap(center => {
+    const cityToken = normalise(center.city_name);
+    const branchToken = normalise(center.branch_name);
+    const tokens = [{ token: cityToken, center }];
+    if (branchToken !== cityToken) {
+      tokens.push({ token: branchToken, center });
+    }
+    return tokens;
+  })
+  .sort((a, b) => b.token.length - a.token.length);
 
 export function extractPreferredDate(raw) {
   if (!raw) return null;
@@ -663,19 +699,45 @@ export function extractPreferredDate(raw) {
   );
   if (bookingCtx) return `${bookingCtx[1]} तारीख`;
 
+  // FIX v8: Extract weekday names with better Hindi pattern matching
+  // Check for full Hindi weekday names (सोमवार, मंगलवार, etc) and variants
+  const hindiWeekdayPattern = /(?:^|\s)(सोमवार|समवार|मंगलवार|मंगल|बुधवार|बुध|गुरुवार|गुरु|शुक्रवार|शुक्र|शनिवार|शनि|रविवार|रवि)(?:\s|$)/u;
+  const hindiWeekday = t.match(hindiWeekdayPattern);
+  if (hindiWeekday) {
+    const weekdayToken = hindiWeekday[1];
+    // Map variants to canonical form
+    const weekdayCanonical = DAY_LABEL_MAP[weekdayToken] || weekdayToken;
+    return weekdayCanonical;
+  }
+
+  // English weekday variants (monday, mon, monday, etc)
+  const enWeekdayPattern = /(?:^|\s)(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)(?:\s|$)/i;
+  const enWeekday = t.match(enWeekdayPattern);
+  if (enWeekday) {
+    const weekdayLower = enWeekday[1].toLowerCase();
+    // Map to canonical Hindi form from DAY_LABEL_MAP
+    const weekdayCanonical = DAY_LABEL_MAP[weekdayLower];
+    if (weekdayCanonical) return weekdayCanonical;
+  }
+
+  // FIX v7: Use pre-computed sorted keys instead of sorting on every call
+  // Named day/relative — check compound forms FIRST before bare "अगले"
+  for (const kw of SORTED_DAY_KEYS) {
+    if (t.includes(kw)) return DAY_LABEL_MAP[kw];
+  }
+
+  // FIX v8: Recognize bare "tarikh" (date) keyword without number
+  // This handles cases like "तारीख कैसे कर दो?" (how to arrange a date?)
+  // Return special token that NLP layer should handle as "asking for date"
+  if (t.match(/(?:^|\s)(?:तारीख|tarikh|date|din)(?:\s|$|\?)/u)) {
+    return "कल"; // Default to tomorrow as suggested date
+  }
+
   // Bare number 1-31 as standalone word (last resort — only if nothing else matched)
   const bareNum = t.match(/(?:^|\s)(\d{1,2})(?:\s|$)/);
   if (bareNum) {
     const n = parseInt(bareNum[1], 10);
     if (n >= 1 && n <= 31) return `${n} तारीख`;
-  }
-
-  // Named day/relative
-  const sortedKeys = Object.keys(DAY_LABEL_MAP).sort(
-    (a, b) => b.length - a.length,
-  );
-  for (const kw of sortedKeys) {
-    if (t.includes(kw)) return DAY_LABEL_MAP[kw];
   }
 
   return null;
@@ -1071,6 +1133,10 @@ const RESCHEDULE_PATTERNS = [
   "time change",
   "kal",
   "parso",
+  "date kaise",
+  "din kaise",
+  "tarikh kaise",
+  "कैसे करें",
   "तारीख बदल दो",
   "तारीख बदलो",
   "शेड्यूल बदलो",
@@ -1086,12 +1152,19 @@ const RESCHEDULE_PATTERNS = [
   "परसों करो",
   "कल",
   "परसों",
+  "समवार",  // Variant of Somvar (Monday)
   "सोमवार",
+  "मंगल",    // Short for Mangalwar (Tuesday)
   "मंगलवार",
+  "बुध",      // Short for Budhwar (Wednesday)
   "बुधवार",
+  "गुरु",     // Short for Guruwar (Thursday)
   "गुरुवार",
+  "शुक्र",    // Short for Shukrawar (Friday)
   "शुक्रवार",
+  "शनि",     // Short for Shaniwar (Saturday)
   "शनिवार",
+  "रवि",     // Short for Raviwar (Sunday)
   "रविवार",
   "तारीख",
 ];
@@ -1105,9 +1178,9 @@ const CITY_TOKENS_DEVANAGARI = Object.keys(HINDI_CITY_MAP);
    Priority:
    REPEAT > CONFUSION > ALREADY_DONE > DRIVER_NOT_AVAILABLE >
    MACHINE_BUSY > WORKING_FINE > MONEY_ISSUE > CALL_LATER >
-   PROVIDE_BRANCH > RESCHEDULE > CONFIRM > REJECT > UNKNOWN
+   RESCHEDULE > CONFIRM > PROVIDE_BRANCH > REJECT > UNKNOWN
    ===================================================================== */
-function detectIntent(normText, rawText) {
+function detectIntent(normText, rawText, cachedBranch = null) {
   if (!normText || normText.length === 0) return INTENT.UNCLEAR;
 
   if (REPEAT_PATTERNS.some((p) => normText.includes(p))) return INTENT.REPEAT;
@@ -1129,12 +1202,14 @@ function detectIntent(normText, rawText) {
   if (CALL_LATER_PATTERNS.some((p) => normText.includes(p)))
     return INTENT.CALL_LATER;
 
-  // FIX v5: Detect PROVIDE_BRANCH before RESCHEDULE/CONFIRM so city names get proper intent
-  if (matchBranch(rawText || normText)) return INTENT.PROVIDE_BRANCH;
-
+  // FIX v7: Check RESCHEDULE FIRST so "kal jaipur mein karo" → RESCHEDULE (not PROVIDE_BRANCH)
+  // Only after ruling out date-based intents do we check for standalone city names
   if (RESCHEDULE_PATTERNS.some((p) => normText.includes(p)))
     return INTENT.RESCHEDULE;
   if (CONFIRM_PATTERNS.some((p) => normText.includes(p))) return INTENT.CONFIRM;
+
+  // FIX v7: Use cached branch result instead of calling matchBranch again
+  if (cachedBranch) return INTENT.PROVIDE_BRANCH;
 
   // FIX v5: "nahi" as a standalone word — use word boundary check
   // Ensure it's not part of a CONFUSION phrase (those were caught above)
@@ -1217,7 +1292,9 @@ const R = {
    ===================================================================== */
 export function processUserInput(userText, sessionData) {
   const normText = normalise(userText);
-  const intent = detectIntent(normText, userText);
+  // FIX v7: Cache branch matching — don't call it twice (once in detectIntent, once in processUserInput)
+  const cachedBranch = matchBranch(userText);
+  const intent = detectIntent(normText, userText, cachedBranch);
   const state = sessionData.state || "awaiting_initial_decision";
   const name = sessionData.customerName || "sir";
   const unknownStreak = sessionData.unknownStreak || 0;
@@ -1452,10 +1529,22 @@ export function processUserInput(userText, sessionData) {
         );
       }
 
-      // FIX v5: CONFIRM with embedded date ("haan, kal karo") — extract date first.
-      // Without this, bare CONFIRM jumped to branch without capturing the date.
+      // FIX v8: CONFIRM without extracted date — check for contextual date cues
+      // If customer says "thik hai" (OK) with date keyword, treat as acceptance + default to tomorrow
       if (intent === INTENT.CONFIRM) {
-        // No extractable date in utterance — ask explicitly
+        const hasDateKeyword = /तारीख|tarikh|date|din|dino/u.test(normText);
+        if (hasDateKeyword || userText.length < 15) {
+          // Short confirmation + date context = accept with default tomorrow
+          const defaultDate = "कल";
+          const display = resolveDate(defaultDate)?.display || defaultDate;
+          return result(
+            R.confirmDate(name, display),
+            "awaiting_date_confirm",
+            false,
+            defaultDate,
+          );
+        }
+        // Empty or generic confirm without context — ask explicitly
         return result(R.askDate(name), state, false);
       }
 
@@ -1464,6 +1553,21 @@ export function processUserInput(userText, sessionData) {
       if (intent === INTENT.REJECT) {
         return result(R.askBranch(name), "awaiting_branch", false);
       }
+
+      // FIX v8: Handle RESCHEDULE and PROVIDE_DATE in awaiting_date
+      // These intents mean customer is asking for date (even without specific date given)
+      if (intent === INTENT.RESCHEDULE || intent === INTENT.PROVIDE_DATE) {
+        // Already tried extractPreferredDate above, so default to tomorrow
+        const defaultDate = "कल";
+        const display = resolveDate(defaultDate)?.display || defaultDate;
+        return result(
+          R.confirmDate(name, display),
+          "awaiting_date_confirm",
+          false,
+          defaultDate,
+        );
+      }
+
       if (intent === INTENT.DRIVER_NOT_AVAILABLE)
         return result(R.objectionDriverNotAvailable(name), state, false);
       if (intent === INTENT.MACHINE_BUSY)

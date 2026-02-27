@@ -368,9 +368,21 @@ export function resolveDate(token) {
     return { display: formatDisplay(d), iso: formatISO(d) };
   }
 
-  /* ── Relative: agle hafte / next week ── */
+  /* ── Relative: agle (just "next" / "immediately") — resolve to tomorrow ── */
+  if (t === 'अगले' || t === 'agle' || t === 'next' || t === 'asap') {
+    const d = addDays(today, 1);
+    return { display: formatDisplay(d), iso: formatISO(d) };
+  }
+
+  /* ── Relative: agle hi (immediately) — resolve to tomorrow ── */
+  if (t === 'अगले ही' || t === 'agle hi') {
+    const d = addDays(today, 1);
+    return { display: formatDisplay(d), iso: formatISO(d) };
+  }
+
+  /* ── Relative: agle hafte / next week — resolve to next Monday (start of next work week) ── */
   if (t === 'अगले हफ्ते' || t === 'agle hafte' || t === 'next week' || t === 'agle week') {
-    const d = addDays(today, 7);
+    const d = nextWeekday(1); // Monday = 1
     return { display: formatDisplay(d), iso: formatISO(d) };
   }
 
@@ -382,13 +394,13 @@ export function resolveDate(token) {
 
   /* ── Named weekday (Hindi or English) ── */
   const weekdayMap = {
-    'सोमवार': 1, 'somwar': 1, 'monday': 1,
-    'मंगलवार': 2, 'mangalwar': 2, 'tuesday': 2,
-    'बुधवार': 3, 'budhwar': 3, 'wednesday': 3,
-    'गुरुवार': 4, 'guruwar': 4, 'thursday': 4,
-    'शुक्रवार': 5, 'shukrawar': 5, 'friday': 5,
-    'शनिवार': 6, 'shaniwar': 6, 'saturday': 6,
-    'रविवार': 0, 'raviwar': 0, 'sunday': 0,
+    'सोमवार': 1, 'समवार': 1, 'somwar': 1, 'samvar': 1, 'mon': 1, 'monday': 1,
+    'मंगलवार': 2, 'मंगल': 2, 'mangalwar': 2, 'mangal': 2, 'tue': 2, 'tuesday': 2,
+    'बुधवार': 3, 'बुध': 3, 'budhwar': 3, 'budh': 3, 'wed': 3, 'wednesday': 3,
+    'गुरुवार': 4, 'गुरु': 4, 'guruwar': 4, 'guru': 4, 'thu': 4, 'thursday': 4,
+    'शुक्रवार': 5, 'शुक्र': 5, 'shukrawar': 5, 'shukra': 5, 'fri': 5, 'friday': 5,
+    'शनिवार': 6, 'शनि': 6, 'shaniwar': 6, 'shani': 6, 'sat': 6, 'saturday': 6,
+    'रविवार': 0, 'रवि': 0, 'raviwar': 0, 'ravi': 0, 'sun': 0, 'sunday': 0,
   };
   if (weekdayMap[t] !== undefined) {
     const d = nextWeekday(weekdayMap[t]);

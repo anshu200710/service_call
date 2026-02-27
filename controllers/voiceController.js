@@ -41,8 +41,8 @@ const CFG = {
   MAX_SILENCE_RETRIES: 3,
   MAX_TOTAL_TURNS: 15,
   CONFIDENCE_THRESHOLD: 0.5,
-  GATHER_TIMEOUT: 6,
-  SPEECH_TIMEOUT: 3,
+  GATHER_TIMEOUT: 8,    // FIX v7: increased from 6 (was too short for TTS + response)
+  SPEECH_TIMEOUT: 4,    // FIX v7: increased from 3 (Hindi needs more pause tolerance)
   TTS_LANGUAGE: "hi-IN",
   TTS_VOICE: "Polly.Aditi",
   SESSION_TTL_MS: 30 * 60 * 1000, // 30 minutes
@@ -148,6 +148,7 @@ function buildVoiceResponse({ twiml, message, actionUrl, hangup = false }) {
     timeout: CFG.GATHER_TIMEOUT,
     speechTimeout: CFG.SPEECH_TIMEOUT,
     profanityFilter: false,
+    bargeIn: true, // FIX v7: let customer interrupt bot mid-speech
   });
   gather.say(sayOpts, message);
 }
@@ -426,166 +427,115 @@ function isGenuineConfirm(userText, state) {
 const V = {
   // ── Opening ──────────────────────────────────────────────────────────
   greeting: (name, model, number, serviceType) =>
-  `Namaste ${name} ji.
-  Main Rajesh, JSB Motors se.
-  Aapki ${model} machine number ${number} ki ${serviceType} service due hai.
-  Kya iss service ke liye iss hafte ki koi date book kar doon?`,
+    `नमस्ते ${name} जी! मैं राजेश JCB Motors से बोल रहा हूँ। आपकी मशीन नंबर ${number} की ${serviceType} सर्विस का समय आ गया है। क्या इस हफ्ते बुक कर दूँ?`,
 
   // ── Date collection ──────────────────────────────────────────────────
-askDate: (name) =>
-  `${name} ji, kaunsi date theek rahegi?
-  Kal, parso ya koi aur din bol dijiye.`,
+  askDate: (name) =>
+    `${name} जी, कौन सा दिन ठीक रहेगा आपके लिए? कल, परसों, या इस हफ्ते कोई और दिन बताइए।`,
 
   confirmDate: (name, displayDate) =>
-    `Theek hai ${name} ji — to ${displayDate} ke liye service book karta hun. ` +
-    `Confirm karna hai? Bas haan bol dijiye.`,
+    `ठीक है ${name} जी, ${displayDate} को बुक करता हूँ। बस एक बार हाँ बोल दीजिए।`,
 
   // ── Branch collection ────────────────────────────────────────────────
   askBranch: (name) =>
-  `${name} ji, machine kis city mein hai?
-  Jaipur, Kota, Udaipur ya koi aur?`,
+    `${name} जी, मशीन किस शहर में है? जयपुर, कोटा, उदयपुर या अजमेर?`,
 
   askBranchAgain: (name) =>
-    `${name} ji, sorry — main clearly nahi sun paya. ` +
-    `Bas ek baar city ka naam boliye, jaise Jaipur, Kota, ya Udaipur. ` +
-    `Apni city bataiye?`,
+    `${name} जी, शहर का नाम ज़रा साफ़ बोलिए — जयपुर, कोटा, अजमेर, उदयपुर या अलवर?`,
 
   // ── Booking confirmed ────────────────────────────────────────────────
-confirmBooking: (name, branchName, branchCity, displayDate) =>
-  `Ho gaya ${name} ji.
-  Service ${displayDate} ko confirm hai.
-  Center ${branchName}, ${branchCity}.
-  Engineer aapse pehle call karega.
-  Dhanyawad.`,
+  confirmBooking: (name, branchName, branchCity, displayDate) =>
+    `बहुत बढ़िया ${name} जी! सर्विस बुक हो गई — ${displayDate} को ${branchName}, ${branchCity} में। हमारे इंजीनियर आपसे संपर्क करेंगे। बहुत धन्यवाद!`,
 
   // ── Objection: why not now? ──────────────────────────────────────────
   askReason: (name) =>
-    `Arey koi baat nahi ${name} ji, main samajh sakta hun. ` +
-    `Bas ek baar bata dijiye — pareshani hai kya? ` +
-    `Shayad hum kuch arrange kar sakein aapke liye.`,
+    `कोई बात नहीं ${name} जी। बताइए क्या दिक्कत है? शायद हम कुछ मदद कर सकें।`,
 
   // ── Already done path ────────────────────────────────────────────────
   askAlreadyDoneDetails: (name) =>
-    `Wah ${name} ji, yeh toh bahut acha kiya aapne! ` +
-    `Record mein update kar deta hun — ` +
-    `kya aap bata sakte hain kab karwai thi, kahan se, aur kaunsi service thi?`,
+    `अरे वाह, बहुत अच्छा किया ${name} जी! कब करवाई थी, कहाँ से, और कौन सी सर्विस थी? थोड़ा बता दीजिए।`,
 
   alreadyDoneSaved: (name) =>
-    `Shukriya ${name} ji, detail dene ke liye. ` +
-    `Aapka record update ho gaya hai. ` +
-    `Agli service ki date aane pe hum pehle se aapko remind kar denge. ` +
-    `Take care, Namaste!`,
+    `शुक्रिया ${name} जी! रिकॉर्ड अपडेट हो गया। अगली सर्विस का रिमाइंडर पहले से आ जाएगा। धन्यवाद!`,
 
   // ── Objection handlers ───────────────────────────────────────────────
   objectionDriverNotAvailable: (name) =>
-    `Haan ${name} ji, bilkul samajh aaya — driver available nahi hai toh mushkil hoti hai. ` +
-    `Aap koi bhi future date bata do jab driver hoga, hum wahi fix kar lete hain. ` +
-    `Time pe service se machine breakdown se bachti hai — ultimately aapka hi time aur paisa bachta hai. ` +
-    `Kaunsa din theek lagta hai?`,
+    `समझ गया ${name} जी। कोई दिन बताइए जब ड्राइवर हो — समय पर सर्विस से मशीन खराब होने से बचती है। कौन सा दिन ठीक रहेगा?`,
 
   objectionMachineBusy: (name) =>
-    `Samajh gaya ${name} ji, machine site pe lagi hai toh roka nahi ja sakta. ` +
-    `Aap koi aisi date sochiye jab thodi der ke liye machine available ho — ` +
-    `hamare engineers fast kaam karte hain, zyada time nahi lagega. ` +
-    `Kab tak machine thodi free ho sakti hai?`,
+    `समझ गया ${name} जी, मशीन साइट पर है। कोई एक दिन सोचिए जब थोड़ी देर के लिए फ्री हो सके। कब तक हो सकती है?`,
 
   objectionWorkingFine: (name) =>
-    `Arey yeh toh bahut acha hai ${name} ji ki machine sahi chal rahi hai — ` +
-    `aur isliye hi service time pe karni chahiye, jab sab theek ho. ` +
-    `service karna ek preventive cheez hai — baad mein badi breakdown se bachate hain. ` +
-    `Thoda time lagega schedule mein — kab karein aapke liye?`,
+    `अच्छी बात है ${name} जी कि मशीन ठीक चल रही है। लेकिन सर्विस पहले से करवाने पर अचानक खराबी नहीं आती। कब करवाएँ?`,
 
   objectionMoneyIssue: (name) =>
-    `${name} ji aap fikr mat karein, paisa abhi nahi dena. ` +
-    `Hum agle mahine ki date fix kar dete hain — sirf date confirm karo aaj. ` +
-    `Baaki sab hum sambhal lenge, aaram se. ` +
-    `Kaunsa mahina ya date aapke liye suit karega?`,
+    `कोई फ़िक्र नहीं ${name} जी, पेमेंट बाद में हो जाएगी। बस अगले महीने की एक तारीख बता दीजिए। कौन सा महीना?`,
 
   objectionCallLater: (name) =>
-    `Theek hai ${name} ji, main jaanta hun aap busy hain — main zyada time nahi lunga. ` +
-    `Ek kaam karo — abhi ek din bata do, main mark kar leta hun. ` +
-    `Baad mein reminder bhi aa jayega. Kaunsa din pakka rahega?`,
+    `ठीक है ${name} जी। एक दिन बता दीजिए — मैं नोट कर लेता हूँ और बाद में रिमाइंडर आ जाएगा। कौन सा दिन?`,
 
   // ── Final persuasion attempt ─────────────────────────────────────────
   persuasionFinal: (name) =>
-    `${name} ji, dekho — main jaanta hun aap kaafi busy rehte ho. ` +
-    `Par yeh ${name} ji, service miss karna machine ke liye sach mein costly ho sakta hai. ` +
-    `Aaj ek baar date fix kar lo, baaki kaam hum kar lenge. ` +
-    `Koi bhi ek din bolo — hum fit kar denge.`,
+    `${name} जी, सर्विस छोड़ने पर बाद में ज़्यादा खर्चा पड़ता है। आज एक तारीख तय कर लीजिए — बाकी सब हम सँभाल लेंगे। हाँ?`,
 
   // ── End states ───────────────────────────────────────────────────────
   rejected: (name) =>
-    `Theek hai ${name} ji, koi baat nahi — aapka time respected hai. ` +
-    `Jab bhi zaroorat ho, JSB Motors mein call kar lena, hum ready hain. ` +
-    `Dhanyawad, take care. Namaste!`,
+    `ठीक है ${name} जी। जब भी ज़रूरत हो, JSB Motors को कॉल करिएगा — हम हमेशा तैयार हैं। धन्यवाद!`,
 
   noResponseEnd: (name) =>
-    `${name} ji, lagta hai abhi baat karna mushkil ho raha hai. ` +
-    `Koi tension nahi — hum thodi der mein dobara try karenge. ` +
-    `Dhanyawad, Namaste!`,
+    `${name} जी, थोड़ी देर में हम दोबारा कॉल करेंगे। धन्यवाद!`,
 
   // ── Silence fallbacks ────────────────────────────────────────────────
   silenceFallback: {
     awaiting_initial_decision: (name) =>
-      `${name} ji, hello? Kya aap sun pa rahe hain? ` +
-      `Main service booking ke baare mein baat kar raha tha — ` +
-      `kya is hafte schedule kar sakta hun? Bas haan ya nahi boliye.`,
+      `${name} जी, सुन रहे हैं आप? सर्विस बुकिंग के बारे में पूछ रहा था — क्या इस हफ्ते करवा लें?`,
 
     awaiting_reason: (name) =>
-      `${name} ji, haan? Main sun raha hun — koi baat ho to batao, koi problem nahi.`,
+      `${name} जी, मैं सुन रहा हूँ — कोई परेशानी हो तो बताइए, कोई दबाव नहीं है।`,
 
     awaiting_reason_persisted: (name) =>
-      `${name} ji, koi bhi ek din bata do — hum aapke schedule ke hisaab se arrange kar lenge.`,
+      `${name} जी, कोई एक दिन बता दीजिए — हम आपके हिसाब से सब arrange कर देंगे।`,
 
     awaiting_date: (name) =>
-      `${name} ji, kaunsa din sahi lagega? ` +
-      `Kal, parso, ya koi bhi din is hafte — jo bhi convenient ho.`,
+      `${name} जी, कौन सा दिन ठीक लगेगा? कल, परसों, या इस हफ्ते कोई भी दिन।`,
 
     awaiting_date_confirm: (name) =>
-      `${name} ji, theek hai na yeh date? Sirf haan ya nahi boliye.`,
+      `${name} जी, यह तारीख ठीक है ना? हाँ या नहीं बोल दीजिए।`,
 
     awaiting_branch: (name) =>
-      `${name} ji, machine kaun si city mein hai? ` +
-      `Bas city ka naam bata dijiye.`,
+      `${name} जी, मशीन का शहर बताइए — जयपुर, कोटा, अजमेर या उदयपुर?`,
 
     awaiting_service_details: (name) =>
-      `${name} ji, kab aur kahan se service karwai thi? Thoda bata dijiye.`,
+      `${name} जी, कब, कहाँ से और कौन सी सर्विस करवाई थी?`,
   },
 
   // ── Utility lines ────────────────────────────────────────────────────
-  repeat: (name, lastMsg) => `${name} ji, ek baar phir bolta hun — ${lastMsg}`,
+  repeat: (name, lastMsg) => `${name} जी, दोबारा बताता हूँ — ${lastMsg}`,
 
   repeatFallback: (name) =>
-    `${name} ji, main JSB Motors Service Center se Rajesh bol raha hun — ` +
-    `aapki machine ki service booking ke liye call kiya tha.`,
+    `जी, मैं राजेश, JSB Motors से — आपकी मशीन की सर्विस बुकिंग के लिए कॉल किया था।`,
 
   confusionClarify: (name) =>
-    `${name} ji, main JSB Motors Service Center se Rajesh bol raha hun. ` +
-    `Aapki machine ki 500 Hour Service due ho gayi hai — bas isi liye call kiya. ` +
-    `Kya main aapke liye service book kar sakta hun?`,
+    `${name} जी, मैं राजेश, JSB Motors से बोल रहा हूँ। आपकी मशीन की सर्विस का समय आ गया है — क्या बुक करें?`,
 
   lowConfidence: (name) =>
-    `${name} ji, maafi — aawaz thodi clear nahi aayi meri taraf. ` +
-    `Kya aap thoda zyada awaaz mein bol sakte hain?`,
+    `${name} जी, आवाज़ साफ़ नहीं आई। क्या थोड़ा ज़ोर से बोल सकते हैं?`,
 
   politeAskAgain: (name) =>
-    `${name} ji, samajha nahi main — kya aap please seedha bata sakte hain haan ya nahi?`,
+    `${name} जी, समझा नहीं — क्या हाँ या नहीं बोल सकते हैं?`,
 
   technicalError: (name) =>
-    `${name} ji, ek minute — thodi technical problem aa gayi hamare end pe. ` +
-    `Hum aapse bilkul thodi der mein dobara contact karenge. Dhanyawad, Namaste!`,
+    `${name} जी, थोड़ी तकनीकी समस्या आ गई। थोड़ी देर में दोबारा कॉल करते हैं। धन्यवाद!`,
 
   // ── System error lines ───────────────────────────────────────────────
   noCallData: () =>
-    `Namaste ji! Abhi data load karne mein thodi problem hai. ` +
-    `Kripya thodi der baad call karein, hum available hain. Shukriya!`,
+    `नमस्ते जी! डेटा लोड करने में समस्या है। थोड़ी देर बाद कॉल करें। शुक्रिया!`,
 
   noSession: () =>
-    `Namaste ji! Call session timeout ho gaya. ` +
-    `Kripya dobara call karein, hum turant help karenge. Shukriya!`,
+    `नमस्ते जी! सेशन समाप्त हो गया। कृपया दोबारा कॉल करें। शुक्रिया!`,
 
   missingCallSid: () =>
-    `Ek choti technical problem aayi hai. Kripya thodi der baad sampark karein. Shukriya!`,
+    `तकनीकी समस्या है। थोड़ी देर बाद संपर्क करें। शुक्रिया!`,
 };
 
 /* =====================================================================
