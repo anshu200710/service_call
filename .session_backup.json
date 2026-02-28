@@ -96,5 +96,69 @@
         "systemReply": "Samajh gayi Ramesh Sharma ji. Kripya bataiye kya karan hai — main dekhti hoon ki kya koi sahayata ho sakti hai."
       }
     ]
+  },
+  "CA2751749ec47b87e5e290d81df3140e68": {
+    "callSid": "CA2751749ec47b87e5e290d81df3140e68",
+    "customerName": "Ramesh Sharma",
+    "customerPhone": null,
+    "machineModel": "JCB 3DX",
+    "machineNumber": "RJ14AB1234",
+    "serviceType": "500 Hour Service",
+    "dueDate": "2026-02-28",
+    "state": "awaiting_branch",
+    "preferredDate": "सोमवार",
+    "resolvedDate": {
+      "display": "Monday, 2 March 2026",
+      "iso": "2026-03-02"
+    },
+    "assignedBranchName": null,
+    "assignedBranchCode": null,
+    "assignedBranchCity": null,
+    "assignedBranchAddr": null,
+    "rejectionReason": null,
+    "alreadyDoneDetails": null,
+    "persuasionCount": 0,
+    "branchRetries": 1,
+    "confusionCount": 0,
+    "lowConfRetries": 0,
+    "slowSpeechRetries": 0,
+    "repeatCount": 0,
+    "confusionStreak": 0,
+    "outcome": null,
+    "silenceRetries": 0,
+    "unknownStreak": 0,
+    "totalTurns": 3,
+    "retryCount": 0,
+    "lastMessage": "Ramesh Sharma ji, aapki machine abhi kis shehar mein hai? Jaipur, Kota, Ajmer, Alwar, Sikar ya Udaipur — kripya shehar ka naam bataiye.",
+    "lastQuestion": "Machine abhi kaunse sheher mein hai? Jaipur, Kota, Ajmer, Udaipur, Alwar, ya Sikar?",
+    "offTopicCount": 0,
+    "callStartedAt": "2026-02-28T11:10:32.644Z",
+    "ending": false,
+    "turns": [
+      {
+        "turnNumber": 1,
+        "state": "awaiting_initial_decision",
+        "customerSaid": "हां हां, इस हफ्ते के लिए सबसे रहने दो।",
+        "confidence": 0.8372591,
+        "intent": "confirm",
+        "systemReply": "Ramesh Sharma ji, kripya bataiye — kaunsa din aapke liye suvidhajanak rahega? Kal, parso, somwar, ya koi bhi tarikh boliye."
+      },
+      {
+        "turnNumber": 2,
+        "state": "awaiting_date",
+        "customerSaid": "अगले सोमवार!",
+        "confidence": 0.8646376,
+        "intent": "reschedule",
+        "systemReply": "Bilkul Ramesh Sharma ji. Monday, 2 March 2026 ko booking kar rahi hoon — kya yeh theek rahega? Haan ya nahi boliye."
+      },
+      {
+        "turnNumber": 3,
+        "state": "awaiting_date_confirm",
+        "customerSaid": "हां ठीक है हां ठीक है।",
+        "confidence": 0.8398176,
+        "intent": "working_fine",
+        "systemReply": "Ramesh Sharma ji, aapki machine abhi kis shehar mein hai? Jaipur, Kota, Ajmer, Alwar, Sikar ya Udaipur — kripya shehar ka naam bataiye."
+      }
+    ]
   }
 }

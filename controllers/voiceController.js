@@ -437,12 +437,21 @@ function detectSimpleIntent(text) {
     return { intent: INTENT.WORKING_FINE, source: "keyword_working_fine" };
   }
   
-  // GENERAL REJECT — Only if no specific objection matched
+  // STRONG CONFIRM — Explicit booking requests (check BEFORE generic reject)
+  if (t.includes("बुक करनी है") || t.includes("बुक करना है") || 
+      t.includes("सर्विस बुक करनी है") || t.includes("सर्विस बुक करना है") ||
+      t.includes("करनी है") && (t.includes("बुक") || t.includes("सर्विस")) ||
+      t.includes("book karna") || t.includes("service book")) {
+    return { intent: INTENT.CONFIRM, source: "keyword_confirm" };
+  }
+  
+  // GENERAL REJECT — Only if no specific objection matched (CAREFUL: avoid single characters)
   if (t.includes("नहीं") || t.includes("ना") || t.includes("न हीं") || 
-      t.includes("न") || t.includes("नहीं है") || t.includes("फ्री नहीं") || 
+      t.includes("नहीं है") || t.includes("फ्री नहीं") || 
       t.includes("समय नहीं") || t.includes("no") || t.includes("नहीं हूँ") ||
       t.includes("नहीं रे") || t.includes("बिलकुल नहीं") || t.includes("कभी नहीं") ||
-      t.includes("नहीं करना") || t.includes("नहीं कर सकता") || t.includes("नहीं कर सकती")) {
+      t.includes("नहीं करना") || t.includes("नहीं कर सकता") || t.includes("नहीं कर सकती") ||
+      t.includes("mat karo") || t.includes("don't") || t.includes("dont")) {
     return { intent: INTENT.REJECT, source: "keyword_reject" };
   }
   
