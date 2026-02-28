@@ -1,43 +1,3 @@
-/**
- * conversational_intelligence.js  (v5 — JSB Motors Advanced Flow, Bug-Fixed)
- * ===========================================================================
- * Production-grade rule-based NLP for JSB Motors outbound service reminder calls.
- *
- * Bug fixes over v4:
- *
- * 🔴 CRITICAL:
- *   1. persuasionCount read from session correctly — NLP now respects it on re-entry
- *      to awaiting_reason_persisted so "still rejecting → end call" logic actually fires.
- *
- * 🟠 HIGH:
- *   2. CONFIRM in awaiting_reason: "haan haan, driver nahi hai" — filler confirm
- *      no longer jumps to awaiting_date prematurely. Voice layer filters this;
- *      NLP also checks for co-occurring objection keywords before acting on CONFIRM.
- *   3. REJECT_PATTERNS: "nahi" alone can collide with "nahi samjha" (CONFUSION).
- *      Normalised REJECT now requires "nahi" to be a standalone word token,
- *      not part of a CONFUSION phrase that's already caught higher up.
- *   4. PROVIDE_BRANCH intent — now actually detected and used.
- *
- * 🟡 MEDIUM:
- *   5. extractPreferredDate: Hindi spoken number words (ek, do, teen … pachees etc.)
- *      now converted to digits before pattern matching.
- *   6. HINDI_CITY_MAP expanded with alternate Devanagari spellings that Twilio
- *      STT returns inconsistently (भारतपुर vs भरतपुर, जयपुर vs जेपुर, etc.).
- *   7. Mixed city + date in one utterance in awaiting_branch:
- *      branch match succeeds AND date preserved from session correctly.
- *   8. Bare CONFIRM in awaiting_date now extracts date from same utterance before
- *      jumping to branch — prevents skipping date capture on "haan, kal karo".
- *
- * Exports:
- *   processUserInput(userText, sessionData)
- *   → { replyText, nextState, endCall, preferredDate, resolvedDate, extractedBranch, intent }
- *
- *   extractPreferredDate(raw)  → string | null
- *   matchBranch(userText)      → { code, name, city, address } | null
- *   INTENT                     — intent enum
- *   SERVICE_CENTERS            — branch list
- */
-
 import { resolveDate } from "./dateResolver.js";
 
 /* =====================================================================
@@ -53,7 +13,7 @@ export const INTENT = {
   MONEY_ISSUE: "money_issue",
   CALL_LATER: "call_later",
   PROVIDE_DATE: "provide_date",
-  PROVIDE_BRANCH: "provide_branch", // FIX: now actually detected
+  PROVIDE_BRANCH: "provide_branch",
   RESCHEDULE: "reschedule",
   REPEAT: "repeat",
   CONFUSION: "confusion",
@@ -65,293 +25,33 @@ export const INTENT = {
    SERVICE CENTERS
    ===================================================================== */
 export const SERVICE_CENTERS = [
-  {
-    id: 1,
-    city_name: "AJMER",
-    branch_name: "AJMER",
-    branch_code: "1",
-    lat: 26.43488884,
-    lng: 74.698112488,
-    city_add:
-      "F-100, Road No. 5, Riico Industrial Area, Near Power House, Palra, Ajmer",
-    is_active: 1,
-  },
-  {
-    id: 2,
-    city_name: "ALWAR",
-    branch_name: "ALWAR",
-    branch_code: "2",
-    lat: 27.582258224,
-    lng: 76.647377014,
-    city_add:
-      "Khasra no. 2345, Tuleda Bye Pass, Alwar Bhiwadi Highway Alwar-301001",
-    is_active: 1,
-  },
-  {
-    id: 3,
-    city_name: "BANSWARA",
-    branch_name: "UDAIPUR",
-    branch_code: "7",
-    lat: 23.563598633,
-    lng: 74.417541504,
-    city_add:
-      "Near Nayak Hotel, Udaipur - Dungarpur Link Road, Banswara-327001",
-    is_active: 1,
-  },
-  {
-    id: 4,
-    city_name: "BHARATPUR",
-    branch_name: "ALWAR",
-    branch_code: "2",
-    lat: 27.201648712,
-    lng: 77.46295166,
-    city_add: "Kurka house, Sewar road, Near Jain Mandir, Bharatpur (Raj.)",
-    is_active: 1,
-  },
-  {
-    id: 5,
-    city_name: "BHILWARA",
-    branch_name: "BHILWARA",
-    branch_code: "3",
-    lat: 25.374652863,
-    lng: 74.623023987,
-    city_add:
-      "Kundan Complex, Sukhadiya Circle, Near Bewar Booking, Ajmer Road, Bhilwara",
-    is_active: 1,
-  },
-  {
-    id: 6,
-    city_name: "BHIWADI",
-    branch_name: "ALWAR",
-    branch_code: "2",
-    lat: 28.202623367,
-    lng: 76.808448792,
-    city_add:
-      "Rajesh Motors (Raj.) Pvt. Ltd., Near Hutch Tower, Alwar Bye pass road, Bhiwadi, Distt. Alwar, (Raj.)",
-    is_active: 1,
-  },
-  {
-    id: 7,
-    city_name: "DAUSA",
-    branch_name: "JAIPUR",
-    branch_code: "4",
-    lat: 26.905101776,
-    lng: 76.370185852,
-    city_add:
-      "Opp. Anand Goods transport co. Near Saras Dairy Plant, Agra By Pass, N.H-11, Dausa-303303",
-    is_active: 1,
-  },
-  {
-    id: 8,
-    city_name: "DHOLPUR",
-    branch_name: "ALWAR",
-    branch_code: "2",
-    lat: 26.693515778,
-    lng: 77.876922607,
-    city_add: "Bharatpur Road, Layania Marriage Home, Dholpur",
-    is_active: 1,
-  },
-  {
-    id: 9,
-    city_name: "DUNGARPUR",
-    branch_name: "UDAIPUR",
-    branch_code: "7",
-    lat: 23.844612122,
-    lng: 73.737922668,
-    city_add:
-      "T.P.Complex Shopno 1-2 Nr. Reliance Petrol Pump, Sagwara Road, Dunagarpur",
-    is_active: 1,
-  },
-  {
-    id: 10,
-    city_name: "GONER ROAD",
-    branch_name: "JAIPUR",
-    branch_code: "4",
-    lat: 26.889762878,
-    lng: 75.873939514,
-    city_add: "72, Goner Turn, Agra Road, Jaipur-302004, Rajasthan.",
-    is_active: 1,
-  },
-  {
-    id: 11,
-    city_name: "JAIPUR",
-    branch_name: "JAIPUR",
-    branch_code: "4",
-    lat: 26.865495682,
-    lng: 75.681541443,
-    city_add:
-      "Khasra No. 1170-1175, Near Delhi Public School, Bhankrota, Ajmer Road, Jaipur, Rajasthan-302026",
-    is_active: 1,
-  },
-  {
-    id: 12,
-    city_name: "JHALAWAR",
-    branch_name: "KOTA",
-    branch_code: "5",
-    lat: 24.547901154,
-    lng: 76.194129944,
-    city_add: "Opp. Roop Nagar Colony, Kota Road, Jhalawar",
-    is_active: 1,
-  },
-  {
-    id: 13,
-    city_name: "JHUNJHUNU",
-    branch_name: "SIKAR",
-    branch_code: "6",
-    lat: 28.09862709,
-    lng: 75.374809265,
-    city_add:
-      "Opp. Police Line, Near Railway Crossing, Phase-2, Riico, Jhunjhunu",
-    is_active: 1,
-  },
-  {
-    id: 14,
-    city_name: "KARAULI",
-    branch_name: "JAIPUR",
-    branch_code: "4",
-    lat: 26.512748718,
-    lng: 77.021934509,
-    city_add:
-      "Infront of S.P. Office, Shukla Colony Corner, Mandrayal Road, Karauli",
-    is_active: 1,
-  },
-  {
-    id: 15,
-    city_name: "KEKRI",
-    branch_name: "AJMER",
-    branch_code: "1",
-    lat: 25.961145401,
-    lng: 75.157318115,
-    city_add: "Ajmer Road, Near Peer Baba, Near R.T.O. Office, Kekri-305404",
-    is_active: 1,
-  },
-  {
-    id: 16,
-    city_name: "KOTA",
-    branch_name: "KOTA",
-    branch_code: "5",
-    lat: 25.12909317,
-    lng: 75.868736267,
-    city_add: "B-259, Ipia Road No-06, Near Railway Flyover, Kota",
-    is_active: 1,
-  },
-  {
-    id: 17,
-    city_name: "KOTPUTLI",
-    branch_name: "JAIPUR",
-    branch_code: "4",
-    lat: 27.680557251,
-    lng: 76.160636902,
-    city_add:
-      "C/o Old Vijay Automobile N.H.8, Teh. Kotputli, Distt. Jaipur (Raj.)",
-    is_active: 1,
-  },
-  {
-    id: 18,
-    city_name: "NEEM KA THANA",
-    branch_name: "JAIPUR",
-    branch_code: "4",
-    lat: 27.741991043,
-    lng: 75.788673401,
-    city_add: "Opp. Jodla Johra, Neem Ka Thana, Dist. Sikar",
-    is_active: 1,
-  },
-  {
-    id: 19,
-    city_name: "NIMBAHERA",
-    branch_name: "BHILWARA",
-    branch_code: "3",
-    lat: 24.617570877,
-    lng: 74.672302246,
-    city_add:
-      "Near Mahaveer Rastaurant, Eidgah Chauraha, Udaipur Road, Nimbahera-312602",
-    is_active: 1,
-  },
-  {
-    id: 20,
-    city_name: "PRATAPGARH",
-    branch_name: "BHILWARA",
-    branch_code: "3",
-    lat: 24.038845062,
-    lng: 74.776138306,
-    city_add:
-      "Ambedkar Circle, Near Anand Service Centre, Opp. Bank Of India, Pratapgarh",
-    is_active: 1,
-  },
-  {
-    id: 21,
-    city_name: "RAJSAMAND",
-    branch_name: "UDAIPUR",
-    branch_code: "7",
-    lat: 25.078897476,
-    lng: 73.866836548,
-    city_add:
-      "Near Indusind Bank Ltd. Tvs Chouraha, Shrinath Hotel, Kankroli, Rajsamand",
-    is_active: 1,
-  },
-  {
-    id: 22,
-    city_name: "RAMGANJMANDI",
-    branch_name: "KOTA",
-    branch_code: "5",
-    lat: 24.655239105,
-    lng: 75.971496582,
-    city_add: "Near Reliance Petrol Pump, Suket Road, Ramganj Mandi.",
-    is_active: 1,
-  },
-  {
-    id: 23,
-    city_name: "SIKAR",
-    branch_name: "SIKAR",
-    branch_code: "6",
-    lat: 27.591619492,
-    lng: 75.171058655,
-    city_add: "Opp. Parnami Motors, Near Circuit House, Jaipur Road, Sikar",
-    is_active: 1,
-  },
-  {
-    id: 25,
-    city_name: "SUJANGARH",
-    branch_name: "SIKAR",
-    branch_code: "6",
-    lat: 27.706758499,
-    lng: 74.481445312,
-    city_add:
-      "Opp. Krishi Upaj Mandi, Salasar Road, Sujangarh, Distt. Churu PIN:331507",
-    is_active: 1,
-  },
-  {
-    id: 26,
-    city_name: "TONK",
-    branch_name: "JAIPUR",
-    branch_code: "4",
-    lat: 26.177381516,
-    lng: 75.81086731,
-    city_add:
-      "Plot No.5, Captain Colony, Jaipur Road, Tonk, Distt. Tonk (Raj.)",
-    is_active: 1,
-  },
-  {
-    id: 27,
-    city_name: "UDAIPUR",
-    branch_name: "UDAIPUR",
-    branch_code: "7",
-    lat: 24.570493698,
-    lng: 73.745994568,
-    city_add: "A-83, Road No. 1, Mewar Industrial Area, Madri, Udaipur (Raj.)",
-    is_active: 1,
-  },
-  {
-    id: 28,
-    city_name: "VKIA",
-    branch_name: "JAIPUR",
-    branch_code: "4",
-    lat: 27.0103827,
-    lng: 75.7703344,
-    city_add:
-      "2nd Rd, New Karni Colony, Kishan Vatika, Ganesh Nagar, Jaipur, Rajasthan 302013",
-    is_active: 1,
-  },
+  { id:1,  city_name:"AJMER",       branch_name:"AJMER",    branch_code:"1", lat:26.43488884,  lng:74.698112488, city_add:"F-100, Road No. 5, Riico Industrial Area, Near Power House, Palra, Ajmer",                                               is_active:1 },
+  { id:2,  city_name:"ALWAR",       branch_name:"ALWAR",    branch_code:"2", lat:27.582258224, lng:76.647377014, city_add:"Khasra no. 2345, Tuleda Bye Pass, Alwar Bhiwadi Highway Alwar-301001",                                                    is_active:1 },
+  { id:3,  city_name:"BANSWARA",    branch_name:"UDAIPUR",  branch_code:"7", lat:23.563598633, lng:74.417541504, city_add:"Near Nayak Hotel, Udaipur - Dungarpur Link Road, Banswara-327001",                                                        is_active:1 },
+  { id:4,  city_name:"BHARATPUR",   branch_name:"ALWAR",    branch_code:"2", lat:27.201648712, lng:77.46295166,  city_add:"Kurka house, Sewar road, Near Jain Mandir, Bharatpur (Raj.)",                                                             is_active:1 },
+  { id:5,  city_name:"BHILWARA",    branch_name:"BHILWARA", branch_code:"3", lat:25.374652863, lng:74.623023987, city_add:"Kundan Complex, Sukhadiya Circle, Near Bewar Booking, Ajmer Road, Bhilwara",                                              is_active:1 },
+  { id:6,  city_name:"BHIWADI",     branch_name:"ALWAR",    branch_code:"2", lat:28.202623367, lng:76.808448792, city_add:"Rajesh Motors (Raj.) Pvt. Ltd., Near Hutch Tower, Alwar Bye pass road, Bhiwadi",                                          is_active:1 },
+  { id:7,  city_name:"DAUSA",       branch_name:"JAIPUR",   branch_code:"4", lat:26.905101776, lng:76.370185852, city_add:"Opp. Anand Goods transport co. Near Saras Dairy Plant, Agra By Pass, N.H-11, Dausa-303303",                               is_active:1 },
+  { id:8,  city_name:"DHOLPUR",     branch_name:"ALWAR",    branch_code:"2", lat:26.693515778, lng:77.876922607, city_add:"Bharatpur Road, Layania Marriage Home, Dholpur",                                                                          is_active:1 },
+  { id:9,  city_name:"DUNGARPUR",   branch_name:"UDAIPUR",  branch_code:"7", lat:23.844612122, lng:73.737922668, city_add:"T.P.Complex Shopno 1-2 Nr. Reliance Petrol Pump, Sagwara Road, Dunagarpur",                                               is_active:1 },
+  { id:10, city_name:"GONER ROAD",  branch_name:"JAIPUR",   branch_code:"4", lat:26.889762878, lng:75.873939514, city_add:"72, Goner Turn, Agra Road, Jaipur-302004, Rajasthan.",                                                                    is_active:1 },
+  { id:11, city_name:"JAIPUR",      branch_name:"JAIPUR",   branch_code:"4", lat:26.865495682, lng:75.681541443, city_add:"Khasra No. 1170-1175, Near Delhi Public School, Bhankrota, Ajmer Road, Jaipur, Rajasthan-302026",                         is_active:1 },
+  { id:12, city_name:"JHALAWAR",    branch_name:"KOTA",     branch_code:"5", lat:24.547901154, lng:76.194129944, city_add:"Opp. Roop Nagar Colony, Kota Road, Jhalawar",                                                                             is_active:1 },
+  { id:13, city_name:"JHUNJHUNU",   branch_name:"SIKAR",    branch_code:"6", lat:28.09862709,  lng:75.374809265, city_add:"Opp. Police Line, Near Railway Crossing, Phase-2, Riico, Jhunjhunu",                                                      is_active:1 },
+  { id:14, city_name:"KARAULI",     branch_name:"JAIPUR",   branch_code:"4", lat:26.512748718, lng:77.021934509, city_add:"Infront of S.P. Office, Shukla Colony Corner, Mandrayal Road, Karauli",                                                   is_active:1 },
+  { id:15, city_name:"KEKRI",       branch_name:"AJMER",    branch_code:"1", lat:25.961145401, lng:75.157318115, city_add:"Ajmer Road, Near Peer Baba, Near R.T.O. Office, Kekri-305404",                                                            is_active:1 },
+  { id:16, city_name:"KOTA",        branch_name:"KOTA",     branch_code:"5", lat:25.12909317,  lng:75.868736267, city_add:"B-259, Ipia Road No-06, Near Railway Flyover, Kota",                                                                      is_active:1 },
+  { id:17, city_name:"KOTPUTLI",    branch_name:"JAIPUR",   branch_code:"4", lat:27.680557251, lng:76.160636902, city_add:"C/o Old Vijay Automobile N.H.8, Teh. Kotputli, Distt. Jaipur (Raj.)",                                                     is_active:1 },
+  { id:18, city_name:"NEEM KA THANA",branch_name:"JAIPUR",  branch_code:"4", lat:27.741991043, lng:75.788673401, city_add:"Opp. Jodla Johra, Neem Ka Thana, Dist. Sikar",                                                                           is_active:1 },
+  { id:19, city_name:"NIMBAHERA",   branch_name:"BHILWARA", branch_code:"3", lat:24.617570877, lng:74.672302246, city_add:"Near Mahaveer Rastaurant, Eidgah Chauraha, Udaipur Road, Nimbahera-312602",                                               is_active:1 },
+  { id:20, city_name:"PRATAPGARH",  branch_name:"BHILWARA", branch_code:"3", lat:24.038845062, lng:74.776138306, city_add:"Ambedkar Circle, Near Anand Service Centre, Opp. Bank Of India, Pratapgarh",                                              is_active:1 },
+  { id:21, city_name:"RAJSAMAND",   branch_name:"UDAIPUR",  branch_code:"7", lat:25.078897476, lng:73.866836548, city_add:"Near Indusind Bank Ltd. Tvs Chouraha, Shrinath Hotel, Kankroli, Rajsamand",                                               is_active:1 },
+  { id:22, city_name:"RAMGANJMANDI",branch_name:"KOTA",     branch_code:"5", lat:24.655239105, lng:75.971496582, city_add:"Near Reliance Petrol Pump, Suket Road, Ramganj Mandi.",                                                                   is_active:1 },
+  { id:23, city_name:"SIKAR",       branch_name:"SIKAR",    branch_code:"6", lat:27.591619492, lng:75.171058655, city_add:"Opp. Parnami Motors, Near Circuit House, Jaipur Road, Sikar",                                                             is_active:1 },
+  { id:25, city_name:"SUJANGARH",   branch_name:"SIKAR",    branch_code:"6", lat:27.706758499, lng:74.481445312, city_add:"Opp. Krishi Upaj Mandi, Salasar Road, Sujangarh, Distt. Churu PIN:331507",                                                is_active:1 },
+  { id:26, city_name:"TONK",        branch_name:"JAIPUR",   branch_code:"4", lat:26.177381516, lng:75.81086731,  city_add:"Plot No.5, Captain Colony, Jaipur Road, Tonk, Distt. Tonk (Raj.)",                                                        is_active:1 },
+  { id:27, city_name:"UDAIPUR",     branch_name:"UDAIPUR",  branch_code:"7", lat:24.570493698, lng:73.745994568, city_add:"A-83, Road No. 1, Mewar Industrial Area, Madri, Udaipur (Raj.)",                                                          is_active:1 },
+  { id:28, city_name:"VKIA",        branch_name:"JAIPUR",   branch_code:"4", lat:27.0103827,   lng:75.7703344,   city_add:"2nd Rd, New Karni Colony, Kishan Vatika, Ganesh Nagar, Jaipur, Rajasthan 302013",                                          is_active:1 },
 ];
 
 /* =====================================================================
@@ -362,170 +62,101 @@ function normalise(raw) {
   return raw
     .toLowerCase()
     .trim()
-    .replace(/[.,!?;:'"()[\]{}]/g, " ")
+    .replace(/[.,!?;:'"()[\]{}।॥]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 /* =====================================================================
-   HINDI CITY NAME MAP
-   FIX v5: Expanded with alternate Devanagari spellings that Twilio
-   hi-IN STT returns inconsistently (both variants now handled).
+   HINDI CITY NAME MAP  (expanded with Rajasthani/alternate STT variants)
    ===================================================================== */
 const HINDI_CITY_MAP = {
-  // Primary forms
-  अजमेर: "ajmer",
-  अलवर: "alwar",
-  बांसवाड़ा: "banswara",
-  बाँसवाड़ा: "banswara", // alternate
-  भरतपुर: "bharatpur",
-  भारतपुर: "bharatpur", // alternate STT output
-  भीलवाड़ा: "bhilwara",
-  भिलवाड़ा: "bhilwara", // alternate
-  भिवाड़ी: "bhiwadi",
-  भीवाड़ी: "bhiwadi", // alternate
-  दौसा: "dausa",
-  धौलपुर: "dholpur",
-  डूंगरपुर: "dungarpur",
-  डुंगरपुर: "dungarpur", // alternate
-  "गोनेर रोड": "goner road",
-  जयपुर: "jaipur",
-  जेपुर: "jaipur", // alternate STT output
-  झालावाड़: "jhalawar",
-  "झाला वाड़": "jhalawar", // alternate
-  झुंझुनू: "jhunjhunu",
-  झुंझुनु: "jhunjhunu", // alternate
-  करौली: "karauli",
-  केकड़ी: "kekri",
-  कोटा: "kota",
-  कोटपूतली: "kotputli",
-  "नीम का थाना": "neem ka thana",
-  निम्बाहेड़ा: "nimbahera",
-  प्रतापगढ़: "pratapgarh",
-  राजसमंद: "rajsamand",
-  राजसमन्द: "rajsamand", // alternate
-  रामगंजमंडी: "ramganjmandi",
-  "रामगंज मंडी": "ramganjmandi", // space variant
-  सीकर: "sikar",
-  सिकर: "sikar", // alternate
-  सुजानगढ़: "sujangarh",
-  टोंक: "tonk",
-  उदयपुर: "udaipur",
-  वीकेआईए: "vkia",
+  अजमेर:"ajmer",    अजमेरा:"ajmer",
+  अलवर:"alwar",     अलावर:"alwar",
+  बांसवाड़ा:"banswara", बाँसवाड़ा:"banswara", बासवाड़ा:"banswara",
+  भरतपुर:"bharatpur",  भारतपुर:"bharatpur",
+  भीलवाड़ा:"bhilwara", भिलवाड़ा:"bhilwara", भिलवारा:"bhilwara",
+  भिवाड़ी:"bhiwadi",  भीवाड़ी:"bhiwadi",  भिवादी:"bhiwadi",
+  दौसा:"dausa",     दावसा:"dausa",
+  धौलपुर:"dholpur", धोलपुर:"dholpur",
+  डूंगरपुर:"dungarpur", डुंगरपुर:"dungarpur", दुंगरपुर:"dungarpur",
+  "गोनेर रोड":"goner road",
+  जयपुर:"jaipur",   जेपुर:"jaipur",    जैपुर:"jaipur",
+  झालावाड़:"jhalawar", "झाला वाड़":"jhalawar",
+  झुंझुनू:"jhunjhunu", झुंझुनु:"jhunjhunu", झुझुनू:"jhunjhunu",
+  करौली:"karauli",  करोली:"karauli",
+  केकड़ी:"kekri",   केकरी:"kekri",
+  कोटा:"kota",      कोट:"kota",
+  कोटपूतली:"kotputli",
+  "नीम का थाना":"neem ka thana",
+  निम्बाहेड़ा:"nimbahera", निंबाहेड़ा:"nimbahera",
+  प्रतापगढ़:"pratapgarh",
+  राजसमंद:"rajsamand", राजसमन्द:"rajsamand",
+  रामगंजमंडी:"ramganjmandi", "रामगंज मंडी":"ramganjmandi",
+  सीकर:"sikar",     सिकर:"sikar",
+  सुजानगढ़:"sujangarh",
+  टोंक:"tonk",
+  उदयपुर:"udaipur", उदैपुर:"udaipur",
+  वीकेआईए:"vkia",
 };
 
 /* =====================================================================
-   BRANCH MATCHER
+   BRANCH MATCHER (pre-cached candidates)
    ===================================================================== */
+const SORTED_HINDI_ENTRIES = Object.entries(HINDI_CITY_MAP).sort(
+  (a, b) => b[0].length - a[0].length
+);
+
+const BRANCH_CANDIDATES = SERVICE_CENTERS
+  .filter(c => c.is_active)
+  .flatMap(center => {
+    const ct = normalise(center.city_name);
+    const bt = normalise(center.branch_name);
+    const r  = [{ token: ct, center }];
+    if (bt !== ct) r.push({ token: bt, center });
+    return r;
+  })
+  .sort((a, b) => b.token.length - a.token.length);
+
 export function matchBranch(userText) {
   if (!userText) return null;
-
   let translated = userText;
-  // FIX v7: Use pre-computed sorted entries instead of sorting on every call
   for (const [hindi, latin] of SORTED_HINDI_ENTRIES) {
-    if (translated.includes(hindi)) {
-      translated = translated.replace(hindi, latin);
-    }
+    if (translated.includes(hindi)) translated = translated.replace(hindi, latin);
   }
-
   const norm = normalise(translated);
-
-  // FIX v7: Use pre-computed branch candidates (already sorted by token length)
   for (const { token, center } of BRANCH_CANDIDATES) {
     if (token && norm.includes(token)) {
-      return {
-        code: center.branch_code,
-        name: center.branch_name,
-        city: center.city_name,
-        address: center.city_add,
-      };
+      return { code: center.branch_code, name: center.branch_name, city: center.city_name, address: center.city_add };
     }
   }
-
   return null;
 }
 
 /* =====================================================================
    HINDI NUMBER WORD MAP
-   FIX v5: Convert spoken Hindi number words to digits so date patterns
-   like "pachees tarikh" → "25 tarikh" get matched correctly.
    ===================================================================== */
 const HINDI_NUM_WORDS = {
-  // Devanagari script
-  एक: "1",
-  दो: "2",
-  तीन: "3",
-  चार: "4",
-  पाँच: "5",
-  पांच: "5",
-  छह: "6",
-  छः: "6",
-  सात: "7",
-  आठ: "8",
-  नौ: "9",
-  दस: "10",
-  ग्यारह: "11",
-  बारह: "12",
-  तेरह: "13",
-  चौदह: "14",
-  पंद्रह: "15",
-  सोलह: "16",
-  सत्रह: "17",
-  अठारह: "18",
-  उन्नीस: "19",
-  बीस: "20",
-  इक्कीस: "21",
-  बाईस: "22",
-  तेईस: "23",
-  चौबीस: "24",
-  पच्चीस: "25",
-  छब्बीस: "26",
-  सत्ताईस: "27",
-  अट्ठाईस: "28",
-  उनतीस: "29",
-  तीस: "30",
-  इकतीस: "31",
-  // Romanised Hinglish
-  ek: "1",
-  do: "2",
-  teen: "3",
-  char: "4",
-  paanch: "5",
-  panch: "5",
-  chhe: "6",
-  saat: "7",
-  aath: "8",
-  nau: "9",
-  das: "10",
-  gyarah: "11",
-  barah: "12",
-  terah: "13",
-  chaudah: "14",
-  pandrah: "15",
-  solah: "16",
-  satrah: "17",
-  atharah: "18",
-  unnees: "19",
-  bees: "20",
-  ikkees: "21",
-  baaees: "22",
-  teyees: "23",
-  chaubees: "24",
-  pachees: "25",
-  chhabbees: "26",
-  sattaees: "27",
-  atthaees: "28",
-  unatees: "29",
-  tees: "30",
-  ikattees: "31",
+  एक:"1",दो:"2",तीन:"3",चार:"4",पाँच:"5",पांच:"5",छह:"6",छः:"6",
+  सात:"7",आठ:"8",नौ:"9",दस:"10",ग्यारह:"11",बारह:"12",तेरह:"13",
+  चौदह:"14",पंद्रह:"15",सोलह:"16",सत्रह:"17",अठारह:"18",उन्नीस:"19",
+  बीस:"20",इक्कीस:"21",बाईस:"22",तेईस:"23",चौबीस:"24",पच्चीस:"25",
+  छब्बीस:"26",सत्ताईस:"27",अट्ठाईस:"28",उनतीस:"29",तीस:"30",इकतीस:"31",
+  ek:"1",do:"2",teen:"3",char:"4",paanch:"5",panch:"5",chhe:"6",
+  saat:"7",aath:"8",nau:"9",das:"10",gyarah:"11",barah:"12",terah:"13",
+  chaudah:"14",pandrah:"15",solah:"16",satrah:"17",atharah:"18",unnees:"19",
+  bees:"20",ikkees:"21",baaees:"22",teyees:"23",chaubees:"24",pachees:"25",
+  chhabbees:"26",sattaees:"27",atthaees:"28",unatees:"29",tees:"30",ikattees:"31",
 };
 
-function replaceHindiNumbers(text) {
-  // FIX v7: Early exit — skip if no number words present (fast path for ~90% of utterances)
-  if (!/[०-९]|ek|do|teen|char|paanch|एक|दो|तीन|चार/u.test(text)) return text;
+const SORTED_NUM_WORDS = Object.entries(HINDI_NUM_WORDS).sort(
+  (a, b) => b[0].length - a[0].length
+);
 
+function replaceHindiNumbers(text) {
+  // Fast path — skip if no Hindi number words present (saves ~90% of calls)
+  if (!/[एकदोतीनचारपाँपांछहसातआठनौदस]|ek\b|do\b|teen\b|char\b|paanch/u.test(text)) return text;
   let out = text;
-  // These are already pre-computed and sorted at module load
   for (const [word, digit] of SORTED_NUM_WORDS) {
     const re = new RegExp(`(^|\\s)${word}(\\s|$)`, "gu");
     out = out.replace(re, `$1${digit}$2`);
@@ -535,135 +166,48 @@ function replaceHindiNumbers(text) {
 
 /* =====================================================================
    DATE EXTRACTION
-   FIX v5: Hindi number words converted to digits before matching.
    ===================================================================== */
-const HINDI_MONTH_MAP = {
-  january: "जनवरी",
-  february: "फरवरी",
-  march: "मार्च",
-  april: "अप्रैल",
-  may: "मई",
-  june: "जून",
-  july: "जुलाई",
-  august: "अगस्त",
-  september: "सितंबर",
-  october: "अक्टूबर",
-  november: "नवंबर",
-  december: "दिसंबर",
-  // Devanagari month names → themselves (for spoken Hindi)
-  जनवरी: "जनवरी",
-  फरवरी: "फरवरी",
-  मार्च: "मार्च",
-  अप्रैल: "अप्रैल",
-  मई: "मई",
-  जून: "जून",
-  जुलाई: "जुलाई",
-  अगस्त: "अगस्त",
-  सितंबर: "सितंबर",
-  अक्टूबर: "अक्टूबर",
-  नवंबर: "नवंबर",
-  दिसंबर: "दिसंबर",
-};
-
 const MONTH_NAMES_PATTERN =
   "january|february|march|april|may|june|july|august|september|october|november|december" +
   "|जनवरी|फरवरी|मार्च|अप्रैल|मई|जून|जुलाई|अगस्त|सितंबर|अक्टूबर|नवंबर|दिसंबर";
 
-const DAY_LABEL_MAP = {
-  kal: "कल",
-  parso: "परसों",
-  agle: "अगले",
-  "agle hi": "अगले",
-  next: "अगले",
-  asap: "अगले",
-  "agle hafte": "अगले हफ्ते",
-  "agle week": "अगले हफ्ते",
-  "next week": "अगले हफ्ते",
-  "agle mahine": "अगले महीने",
-  "next month": "अगले महीने",
-  "do din baad": "2 दिन बाद",
-  "teen din baad": "3 दिन बाद",
-  "ek hafte baad": "1 हफ्ते बाद",
-  monday: "सोमवार",
-  tuesday: "मंगलवार",
-  wednesday: "बुधवार",
-  thursday: "गुरुवार",
-  friday: "शुक्रवार",
-  saturday: "शनिवार",
-  sunday: "रविवार",
-  somwar: "सोमवार",
-  mangalwar: "मंगलवार",
-  budhwar: "बुधवार",
-  guruwar: "गुरुवार",
-  shukrawar: "शुक्रवार",
-  shaniwar: "शनिवार",
-  raviwar: "रविवार",
-  // Extra Hindi weekday variations (transcription variants)
-  समवार: "सोमवार",
-  मंगल: "मंगलवार",
-  बुध: "बुधवार",
-  गुरु: "गुरुवार",
-  शुक्र: "शुक्रवार",
-  शनि: "शनिवार",
-  रवि: "रविवार",
-  // English weekday variations
-  mon: "सोमवार",
-  tue: "मंगलवार",
-  wed: "बुधवार",
-  thu: "गुरुवार",
-  fri: "शुक्रवार",
-  sat: "शनिवार",
-  sun: "रविवार",
-  कल: "कल",
-  परसों: "परसों",
-  सोमवार: "सोमवार",
-  मंगलवार: "मंगलवार",
-  बुधवार: "बुधवार",
-  गुरुवार: "गुरुवार",
-  शुक्रवार: "शुक्रवार",
-  शनिवार: "शनिवार",
-  रविवार: "रविवार",
-  अगले: "अगले",
-  "अगले ही": "अगले",
-  "अगले हफ्ते": "अगले हफ्ते",
-  "अगले महीने": "अगले महीने",
+const HINDI_MONTH_MAP = {
+  january:"जनवरी", february:"फरवरी", march:"मार्च", april:"अप्रैल",
+  may:"मई", june:"जून", july:"जुलाई", august:"अगस्त",
+  september:"सितंबर", october:"अक्टूबर", november:"नवंबर", december:"दिसंबर",
+  जनवरी:"जनवरी",फरवरी:"फरवरी",मार्च:"मार्च",अप्रैल:"अप्रैल",मई:"मई",
+  जून:"जून",जुलाई:"जुलाई",अगस्त:"अगस्त",सितंबर:"सितंबर",
+  अक्टूबर:"अक्टूबर",नवंबर:"नवंबर",दिसंबर:"दिसंबर",
 };
 
-/* ════════════════════════════════════════════════════════════════════════
-   PRE-COMPUTED SORTED ARRAYS (v7 — Performance Optimization)
-   Sorted at module load time (after all constants defined), not on every call.
-   Saves 10-50ms per turn.
-   ════════════════════════════════════════════════════════════════════════ */
-const SORTED_NUM_WORDS = Object.entries(HINDI_NUM_WORDS).sort(
-  (a, b) => b[0].length - a[0].length,
-);
+const DAY_LABEL_MAP = {
+  kal:"कल", parso:"परसों",
+  agle:"अगले", "agle hi":"अगले", next:"अगले", asap:"अगले",
+  "agle hafte":"अगले हफ्ते", "agle week":"अगले हफ्ते", "next week":"अगले हफ्ते",
+  "agle mahine":"अगले महीने", "next month":"अगले महीने",
+  "do din baad":"2 दिन बाद", "teen din baad":"3 दिन बाद", "ek hafte baad":"1 हफ्ते बाद",
+  monday:"सोमवार", tuesday:"मंगलवार", wednesday:"बुधवार",
+  thursday:"गुरुवार", friday:"शुक्रवार", saturday:"शनिवार", sunday:"रविवार",
+  mon:"सोमवार", tue:"मंगलवार", wed:"बुधवार", thu:"गुरुवार",
+  fri:"शुक्रवार", sat:"शनिवार", sun:"रविवार",
+  somwar:"सोमवार", mangalwar:"मंगलवार", budhwar:"बुधवार",
+  guruwar:"गुरुवार", shukrawar:"शुक्रवार", shaniwar:"शनिवार", raviwar:"रविवार",
+  कल:"कल", परसों:"परसों",
+  सोमवार:"सोमवार", समवार:"सोमवार",
+  मंगलवार:"मंगलवार", मंगल:"मंगलवार",
+  बुधवार:"बुधवार", बुध:"बुधवार",
+  गुरुवार:"गुरुवार", गुरु:"गुरुवार",
+  शुक्रवार:"शुक्रवार", शुक्र:"शुक्रवार",
+  शनिवार:"शनिवार", शनि:"शनिवार",
+  रविवार:"रविवार", रवि:"रविवार",
+  अगले:"अगले", "अगले ही":"अगले",
+  "अगले हफ्ते":"अगले हफ्ते", "अगले महीने":"अगले महीने",
+};
 
-const SORTED_DAY_KEYS = Object.keys(DAY_LABEL_MAP).sort(
-  (a, b) => b.length - a.length,
-);
-
-const SORTED_HINDI_ENTRIES = Object.entries(HINDI_CITY_MAP).sort(
-  (a, b) => b[0].length - a[0].length,
-);
-
-// Pre-build branch candidates once (sorted by token length)
-const BRANCH_CANDIDATES = SERVICE_CENTERS
-  .filter(c => c.is_active)
-  .flatMap(center => {
-    const cityToken = normalise(center.city_name);
-    const branchToken = normalise(center.branch_name);
-    const tokens = [{ token: cityToken, center }];
-    if (branchToken !== cityToken) {
-      tokens.push({ token: branchToken, center });
-    }
-    return tokens;
-  })
-  .sort((a, b) => b.token.length - a.token.length);
+const SORTED_DAY_KEYS = Object.keys(DAY_LABEL_MAP).sort((a, b) => b.length - a.length);
 
 export function extractPreferredDate(raw) {
   if (!raw) return null;
-
-  // Convert spoken number words before normalising
   const withDigits = replaceHindiNumbers(raw);
   const t = normalise(withDigits);
 
@@ -672,68 +216,39 @@ export function extractPreferredDate(raw) {
   if (numSlash) return `${numSlash[1]}/${numSlash[2]}`;
 
   // "25 january" or "25 जनवरी"
-  const dayMonthRe = new RegExp(
-    `\\b(\\d{1,2})\\s+(${MONTH_NAMES_PATTERN})\\b`,
-    "u",
-  );
+  const dayMonthRe = new RegExp(`\\b(\\d{1,2})\\s+(${MONTH_NAMES_PATTERN})\\b`, "u");
   const dayMonth = t.match(dayMonthRe);
-  if (dayMonth) {
-    const hindiMonth = HINDI_MONTH_MAP[dayMonth[2]] || dayMonth[2];
-    return `${dayMonth[1]} ${hindiMonth}`;
-  }
+  if (dayMonth) return `${dayMonth[1]} ${HINDI_MONTH_MAP[dayMonth[2]] || dayMonth[2]}`;
 
-  // "25 tarikh" or "25 को" or "25 तारीख"
-  const numBefore = t.match(
-    /(?:^|\s)(\d{1,2})\s+(?:तारीख|tarikh|date)(?:\s|$|को|के)/u,
-  );
+  // "25 tarikh" / "25 तारीख" / "25 को"
+  const numBefore = t.match(/(?:^|\s)(\d{1,2})\s+(?:तारीख|tarikh|date)(?:\s|$|को|के)/u);
   if (numBefore) return `${numBefore[1]} तारीख`;
-
   const numAfter = t.match(/(?:तारीख|tarikh|date)\s+(\d{1,2})(?:\s|$)/u);
   if (numAfter) return `${numAfter[1]} तारीख`;
-
   const numKo = t.match(/(?:^|\s)(\d{1,2})\s+(?:ko|को)(?:\s|$)/u);
   if (numKo) return `${numKo[1]} तारीख`;
+  const bookCtx = t.match(/\b(\d{1,2})\s+(?:ke\s+liye|को\s+बुक|तक|से\s+पहले)/);
+  if (bookCtx) return `${bookCtx[1]} तारीख`;
 
-  const bookingCtx = t.match(
-    /\b(\d{1,2})\s+(?:ke\s+liye|को\s+बुक|तक|से\s+पहले)/,
-  );
-  if (bookingCtx) return `${bookingCtx[1]} तारीख`;
+  // Hindi weekday names
+  const hindiWDPat = /(?:^|\s)(सोमवार|समवार|मंगलवार|मंगल|बुधवार|बुध|गुरुवार|गुरु|शुक्रवार|शुक्र|शनिवार|शनि|रविवार|रवि)(?:\s|$)/u;
+  const hindiWD = t.match(hindiWDPat);
+  if (hindiWD) return DAY_LABEL_MAP[hindiWD[1]] || hindiWD[1];
 
-  // FIX v8: Extract weekday names with better Hindi pattern matching
-  // Check for full Hindi weekday names (सोमवार, मंगलवार, etc) and variants
-  const hindiWeekdayPattern = /(?:^|\s)(सोमवार|समवार|मंगलवार|मंगल|बुधवार|बुध|गुरुवार|गुरु|शुक्रवार|शुक्र|शनिवार|शनि|रविवार|रवि)(?:\s|$)/u;
-  const hindiWeekday = t.match(hindiWeekdayPattern);
-  if (hindiWeekday) {
-    const weekdayToken = hindiWeekday[1];
-    // Map variants to canonical form
-    const weekdayCanonical = DAY_LABEL_MAP[weekdayToken] || weekdayToken;
-    return weekdayCanonical;
+  // English weekday
+  const enWDPat = /(?:^|\s)(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)(?:\s|$)/i;
+  const enWD = t.match(enWDPat);
+  if (enWD) {
+    const canonical = DAY_LABEL_MAP[enWD[1].toLowerCase()];
+    if (canonical) return canonical;
   }
 
-  // English weekday variants (monday, mon, monday, etc)
-  const enWeekdayPattern = /(?:^|\s)(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)(?:\s|$)/i;
-  const enWeekday = t.match(enWeekdayPattern);
-  if (enWeekday) {
-    const weekdayLower = enWeekday[1].toLowerCase();
-    // Map to canonical Hindi form from DAY_LABEL_MAP
-    const weekdayCanonical = DAY_LABEL_MAP[weekdayLower];
-    if (weekdayCanonical) return weekdayCanonical;
-  }
-
-  // FIX v7: Use pre-computed sorted keys instead of sorting on every call
-  // Named day/relative — check compound forms FIRST before bare "अगले"
+  // Named day/relative tokens (longest first to catch "agle hafte" before "agle")
   for (const kw of SORTED_DAY_KEYS) {
     if (t.includes(kw)) return DAY_LABEL_MAP[kw];
   }
 
-  // FIX v8: Recognize bare "tarikh" (date) keyword without number
-  // This handles cases like "तारीख कैसे कर दो?" (how to arrange a date?)
-  // Return special token that NLP layer should handle as "asking for date"
-  if (t.match(/(?:^|\s)(?:तारीख|tarikh|date|din)(?:\s|$|\?)/u)) {
-    return "कल"; // Default to tomorrow as suggested date
-  }
-
-  // Bare number 1-31 as standalone word (last resort — only if nothing else matched)
+  // Bare number 1-31
   const bareNum = t.match(/(?:^|\s)(\d{1,2})(?:\s|$)/);
   if (bareNum) {
     const n = parseInt(bareNum[1], 10);
@@ -747,874 +262,355 @@ export function extractPreferredDate(raw) {
    KEYWORD PATTERN TABLES
    ===================================================================== */
 const REPEAT_PATTERNS = [
-  "dobara boliye",
-  "dobara bolo",
-  "phir se boliye",
-  "phir se bolo",
-  "fir se bolo",
-  "ek baar aur",
-  "kya kaha",
-  "kya bola",
-  "kya bol raha",
-  "suna nahi",
-  "sunai nahi",
-  "awaz nahi",
-  "awaaz nahi",
-  "samjha nahi suna",
-  "clear nahi",
-  "repeat karo",
-  "repeat karein",
-  "repeat please",
-  "say again",
-  "thoda dheere",
-  "dheere boliye",
-  "nahi suna",
-  "kuch nahi suna",
-  "दोबारा बोलो",
-  "दोबारा बोलिए",
-  "फिर से बोलो",
-  "फिर बोलो",
-  "एक बार और",
-  "क्या कहा",
-  "क्या बोले",
-  "नहीं सुना",
-  "आवाज़ नहीं",
-  "धीरे बोलिए",
-  "साफ बोलिए",
+  "dobara boliye","dobara bolo","phir se boliye","phir se bolo","fir se bolo",
+  "ek baar aur","kya kaha","kya bola","kya bol raha","suna nahi","sunai nahi",
+  "awaz nahi","awaaz nahi","clear nahi","repeat karo","repeat karein","say again",
+  "thoda dheere","dheere boliye","nahi suna","kuch nahi suna",
+  "दोबारा बोलो","दोबारा बोलिए","फिर से बोलो","फिर बोलो","एक बार और",
+  "क्या कहा","क्या बोले","नहीं सुना","आवाज़ नहीं","धीरे बोलिए","साफ बोलिए",
 ];
 
 const CONFUSION_PATTERNS = [
-  "kaunsi machine",
-  "konsi machine",
-  "kaun si machine",
-  "kaunsa service",
-  "konsa service",
-  "meri machine nahi",
-  "galat machine",
-  "galat number",
-  "yeh meri nahi",
-  "samajh nahi aaya",
-  "nahi samjha",
-  "nahi samjhi",
-  "kya matlab",
-  "kya bol rahe",
-  "kya pooch rahe",
-  "kya hai yeh",
-  "kon hai",
-  "kaun bol raha",
-  "galat call",
-  "wrong number",
-  "mujhe nahi pata",
-  "nahi samjha",
-  "samjha nahi",
-  "samjhi nahi",
-  "कौन सी मशीन",
-  "गलत मशीन",
-  "गलत नंबर",
-  "यह मेरी नहीं",
-  "समझ नहीं",
-  "क्या मतलब",
-  "गलत कॉल",
-  "यह क्या है",
-  "मुझे नहीं पता",
-  "samajh nahi",
-  "kuch samajh nahi aaya",
+  "kaunsi machine","konsi machine","kaun si machine","kaunsa service",
+  "meri machine nahi","galat machine","galat number","yeh meri nahi",
+  "samajh nahi aaya","nahi samjha","nahi samjhi","kya matlab","kya bol rahe",
+  "kya pooch rahe","kya hai yeh","kon hai","kaun bol raha","galat call",
+  "wrong number","mujhe nahi pata","samajh nahi","kuch samajh nahi aaya",
+  "कौन सी मशीन","गलत मशीन","गलत नंबर","यह मेरी नहीं","समझ नहीं",
+  "क्या मतलब","गलत कॉल","यह क्या है","मुझे नहीं पता",
 ];
 
+/* ─────────────────────────────────────────────────────────────────────
+   CONFIRM_PATTERNS
+   FIX v9: Expanded with Hinglish booking-affirmative phrases that
+   Rajasthani JCB operators actually use. Key additions:
+   - "karwana hai" / "karna hai" / "karwa do" families
+   - "kar lenge" / "kar denge" (we'll get it done)
+   - Marwari: "chhaal karo", "kar dena ji"
+   - Bhojpuri: "haan ba", "theek ba"
+   ───────────────────────────────────────────────────────────────────── */
 const CONFIRM_PATTERNS = [
-  "haan ji bilkul",
-  "ji haan zaroor",
-  "bilkul theek hai",
-  "haan book karo",
-  "book kar do",
-  "book kardo",
-  "book kar",
-  "book karo",
-  "confirm karo",
-  "confirm kar do",
-  "karwa do",
-  "karvao",
-  "karwa lo",
-  "zaroor karo",
-  "haan zaroor",
-  "please book",
-  "haan ji",
-  "ji haan",
-  "ji ha",
-  "theek hai",
-  "theek h",
-  "thik hai",
-  "bilkul",
-  "zaroor",
-  "sahi hai",
-  "acha",
-  "accha",
-  "achha",
-  "achcha",
-  "haan",
-  "haa",
-  "han",
-  "ok",
-  "okay",
-  "yes",
-  "yep",
-  "done",
-  "perfect",
-  "hmm",
-  "confirm",
-  "हाँ बुक करो",
-  "बुक कर दो",
-  "बुक करो",
-  "कन्फर्म करो",
-  "करवा दो",
-  "करवाओ",
-  "ज़रूर करो",
-  "हाँ जी",
-  "जी हाँ",
-  "बिल्कुल",
-  "ज़रूर",
-  "ठीक है",
-  "सही है",
-  "अच्छा",
-  "हाँ",
-  "हां",
-  "ओके",
+  // Strong explicit booking
+  "haan ji bilkul","ji haan zaroor","bilkul theek hai",
+  "haan book karo","book kar do","book kardo","book kar","book karo",
+  "confirm karo","confirm kar do","karwa do","karvao","karwa lo",
+  "zaroor karo","haan zaroor","please book",
+  // FIX v9: "karwana hai" family — "I want it done / need to get it done"
+  "karwana hai","karwana h","karna hai","karna h",
+  "book karwana hai","service karwana hai","karwa lenge","kar lenge",
+  "kar denge","karwa denge","karwa dijiye","kar dijiye","book kar dijiye",
+  "karwa dena","kardo","kar do","haan kar do","haan karo","haan haan karo",
+  "acha kar do","acha karo","theek hai kar do","theek h kar do",
+  "haan ek dum","ek dum theek","bilkul karo","zaroor karwao",
+  // Marwari / Rajasthani
+  "haan ji karo","kar do bhai","kar dena ji","theek karo",
+  "chhaal karo","chhalo karo",
+  // Bhojpuri
+  "haan ba","theek ba","kar dijiye na","kar do na",
+  // Generic affirmatives
+  "haan ji","ji haan","ji ha","theek hai","theek h","thik hai",
+  "bilkul","zaroor","sahi hai","acha","accha","achha","achcha",
+  "haan","haa","han","ok","okay","yes","yep","done","perfect","hmm","confirm",
+  "proceed","chalega","chalta hai","chalo","chalte hain","sahi","agreed","agree",
+  // Devanagari
+  "हाँ बुक करो","बुक कर दो","बुक करो","कन्फर्म करो","करवा दो","करवाओ",
+  "ज़रूर करो","हाँ जी","जी हाँ","बिल्कुल","ज़रूर","ठीक है","सही है",
+  "अच्छा","हाँ","हां","ओके","करवाना है","करना है","कर दो","कर दीजिए",
+  "हाँ करो","बुक करवाना है","सर्विस करवाना है","कर लेंगे","कर देंगे",
 ];
 
-// FIX v5: "nahi" alone must be a full-word token match to avoid false hits inside longer words.
-// We'll do a word-boundary check in detectIntent for REJECT.
 const REJECT_PATTERNS = [
-  "nahi chahiye abhi",
-  "abhi nahi karna",
-  "nahi karna hai",
-  "nahi book karna",
-  "book nahi karna",
-  "cancel kar do",
-  "nahi chahiye",
-  "nahi karna",
-  "mat karo",
-  "mat kar",
-  "rehne do",
-  "rehne de",
-  "chhod do",
-  "band karo",
-  "zaroorat nahi",
-  "need nahi",
-  "mat karna",
-  "abhi nahi",
-  "don't",
-  "dont",
-  "no",
-  "nope",
-  "cancel",
-  // standalone nahi handled separately below
-  "नहीं चाहिए",
-  "नहीं करना",
-  "मत करो",
-  "मत कर",
-  "छोड़ दो",
-  "बंद करो",
-  "ज़रूरत नहीं",
-  "अभी नहीं",
-  "कैंसल कर दो",
-  "ना",
-  "koi tarikh nahi",
-  "koi date nahi",
-  "abhi koi date nahi",
-  "date nahi dunga",
-  "tarikh nahi bataunga",
-  "koi bhi tarikh nahi",
-  "कोई भी तारीख नहीं",
-  "कोई तारीख नहीं",
-  "तारीख नहीं दूंगा",
-  "कोई दिन नहीं",
-  "अभी कोई तारीख नहीं",
+  "nahi chahiye abhi","abhi nahi karna","nahi karna hai","nahi book karna",
+  "book nahi karna","cancel kar do","nahi chahiye","nahi karna","mat karo",
+  "mat kar","rehne do","rehne de","chhod do","band karo","zaroorat nahi",
+  "need nahi","mat karna","abhi nahi","don't","dont","no","nope","cancel",
+  "नहीं चाहिए","नहीं करना","मत करो","मत कर","छोड़ दो","बंद करो",
+  "ज़रूरत नहीं","अभी नहीं","कैंसल कर दो","ना",
+  "koi tarikh nahi","koi date nahi","abhi koi date nahi",
+  "date nahi dunga","tarikh nahi bataunga","koi bhi tarikh nahi",
+  "कोई भी तारीख नहीं","कोई तारीख नहीं","तारीख नहीं दूंगा","कोई दिन नहीं",
 ];
 
 const ALREADY_DONE_PATTERNS = [
-  "ho chuki hai",
-  "ho gayi hai",
-  "karwa chuka",
-  "karwa chuki",
-  "kar chuka",
-  "kar chuki",
-  "pehle karwa li",
-  "already karwa li",
-  "already ho gayi",
-  "service ho gayi",
-  "service karwa chuke",
-  "service karwa li",
-  "karwa di hai",
-  "kar di hai",
-  "serviced",
-  "already done",
-  "already serviced",
-  "done hai",
-  "ho gayi",
-  "पहले करवा ली",
-  "पहले करवाई",
-  "पहले हो गई",
-  "हो चुकी",
-  "पहले ही करवा ली",
-  "कर दी",
-  "करवा दी",
-  "हो गई है",
-  "पहले की",
+  "ho chuki hai","ho gayi hai","karwa chuka","karwa chuki","kar chuka","kar chuki",
+  "pehle karwa li","already karwa li","already ho gayi","service ho gayi",
+  "service karwa chuke","service karwa li","karwa di hai","kar di hai",
+  "serviced","already done","already serviced","done hai","ho gayi","karwa li",
+  "karwa chuke hain","service ho chuki",
+  "पहले करवा ली","पहले करवाई","पहले हो गई","हो चुकी","पहले ही करवा ली",
+  "कर दी","करवा दी","हो गई है","पहले की",
 ];
 
 const DRIVER_NOT_AVAILABLE_PATTERNS = [
-  "driver nahi hai",
-  "driver available nahi",
-  "driver chutti par",
-  "driver gaya hua",
-  "driver nahi",
-  "koi driver nahi",
-  "operator nahi",
-  "operator available nahi",
-  "chalane wala nahi",
-  "chauffeur nahi",
-  "driver busy",
-  "ड्राइवर नहीं",
-  "ड्राइवर उपलब्ध नहीं",
-  "ड्राइवर छुट्टी",
-  "ऑपरेटर नहीं",
-  "ड्राइवर है नहीं",
-  "मेरे ड्राइवर नहीं",
-  "ड्राइवर नहीं है",
-  "ड्राइवर नहीं हैं",
-  "driver nahi milega",
-  "driver bach gaya",
-  "driver nahi aa raha",
-  "चालक नहीं",
-  "चालक उपलब्ध नहीं",
+  "driver nahi hai","driver available nahi","driver chutti par","driver gaya hua",
+  "driver nahi","koi driver nahi","operator nahi","operator available nahi",
+  "chalane wala nahi","driver busy","driver nahi milega","driver nahi aa raha",
+  "ड्राइवर नहीं","ड्राइवर उपलब्ध नहीं","ड्राइवर छुट्टी","ऑपरेटर नहीं",
+  "ड्राइवर है नहीं","मेरे ड्राइवर नहीं","चालक नहीं",
 ];
 
 function hasDriverNotAvailableKeywords(text) {
-  // More flexible: check if BOTH "driver"/"ड्राइवर" AND "not"/"नहीं" appear anywhere in the text
   const hasDriver = /driver|ड्राइवर|चालक|operator|ऑपरेटर/i.test(text);
-  const hasNot =
-    /nahi|नहीं|ना|नहीं|नहीं है|नहीं हैं|उपलब्ध नहीं|available nahi/i.test(text);
+  const hasNot    = /nahi|नहीं|ना|उपलब्ध नहीं|available nahi/i.test(text);
   return hasDriver && hasNot;
 }
 
 const MACHINE_BUSY_PATTERNS = [
-  "machine chal rahi hai",
-  "machine kaam kar rahi",
-  "site pe chal rahi",
-  "kaam chal raha",
-  "project chal raha",
-  "site pe hai",
-  "machine busy hai",
-  "chal rahi hai abhi",
-  "kaam me lagi hai",
-  "nikali nahi ja sakti",
-  "rok nahi sakte",
-  "nikal nahi sakti",
-  "मशीन चल रही",
-  "साइट पर है",
-  "काम चल रहा",
-  "मशीन बिज़ी",
-  "काम में लगी",
-  "machine site pe",
-  "site par hai",
+  "machine chal rahi hai","machine kaam kar rahi","site pe chal rahi",
+  "kaam chal raha","project chal raha","site pe hai","machine busy hai",
+  "chal rahi hai abhi","kaam me lagi hai","nikali nahi ja sakti",
+  "rok nahi sakte","nikal nahi sakti","machine site pe","site par hai",
+  "मशीन चल रही","साइट पर है","काम चल रहा","मशीन बिज़ी","काम में लगी",
 ];
 
 const WORKING_FINE_PATTERNS = [
-  "machine thik hai",
-  "machine sahi hai",
-  "koi problem nahi",
-  "chalti rehti hai",
-  "theek chal rahi",
-  "abhi thik hai",
-  "koi dikkat nahi",
-  "kaam kar rahi hai",
-  "service ki zaroorat nahi",
-  "sab theek hai",
-  "koi issue nahi",
-  "मशीन ठीक है",
-  "कोई दिक्कत नहीं",
-  "ठीक चल रही",
-  "सब ठीक है",
-  "machine kharab nahi",
-  "breakdown nahi",
+  "machine thik hai","machine sahi hai","koi problem nahi","chalti rehti hai",
+  "theek chal rahi","abhi thik hai","koi dikkat nahi","service ki zaroorat nahi",
+  "sab theek hai","koi issue nahi","machine kharab nahi","breakdown nahi",
+  "मशीन ठीक है","कोई दिक्कत नहीं","ठीक चल रही","सब ठीक है",
 ];
 
 const MONEY_ISSUE_PATTERNS = [
-  "paisa nahi",
-  "paise nahi",
-  "budget nahi",
-  "abhi paisa nahi",
-  "funding nahi",
-  "payment nahi",
-  "mehnga hai",
-  "afford nahi",
-  "abhi afford nahi kar sakta",
-  "payment problem",
-  "funds nahi",
-  "rakh nahi sakta",
-  "mahanga",
-  "पैसा नहीं",
-  "पैसे नहीं",
-  "बजट नहीं",
-  "महंगा है",
-  "अभी पैसे नहीं",
-  "फंड नहीं",
-  "payment nahi hai",
+  "paisa nahi","paise nahi","budget nahi","abhi paisa nahi","funding nahi",
+  "payment nahi","mehnga hai","afford nahi","payment problem","funds nahi",
+  "rakh nahi sakta","mahanga","paisa khatam","thoda paisa nahi",
+  "पैसा नहीं","पैसे नहीं","बजट नहीं","महंगा है","अभी पैसे नहीं","फंड नहीं",
 ];
 
 const CALL_LATER_PATTERNS = [
-  "baad mein call karo",
-  "baad mein baat karo",
-  "phir se call karo",
-  "busy hoon abhi",
-  "drive kar raha hoon",
-  "gaadi chala raha hoon",
-  "meeting mein hoon",
-  "kaam chal raha hai",
-  "thodi der baad",
-  "kuch time baad",
-  "later karo",
-  "call back karo",
-  "dobaara call",
-  "phir call",
-  "phir karo",
-  "free nahi",
-  "waqt nahi",
-  "busy hoon",
-  "baad mein",
-  "baad me",
-  "बाद में कॉल करो",
-  "बाद में बात करो",
-  "बिज़ी हूँ",
-  "गाड़ी चला रहा",
-  "मीटिंग में हूँ",
-  "थोड़ी देर बाद",
-  "बाद में",
-  "खाली नहीं",
-  "वक्त नहीं",
+  "baad mein call karo","baad mein baat karo","phir se call karo",
+  "busy hoon abhi","drive kar raha hoon","gaadi chala raha hoon",
+  "meeting mein hoon","thodi der baad","kuch time baad","later karo",
+  "call back karo","dobaara call","phir call","phir karo","free nahi",
+  "waqt nahi","busy hoon","baad mein","baad me","thoda baad",
+  "बाद में कॉल करो","बाद में बात करो","बिज़ी हूँ","गाड़ी चला रहा",
+  "मीटिंग में हूँ","थोड़ी देर बाद","बाद में","खाली नहीं","वक्त नहीं",
 ];
 
 const RESCHEDULE_PATTERNS = [
-  "date change kar do",
-  "date badal do",
-  "date badlo",
-  "schedule badal do",
-  "reschedule karo",
-  "koi aur din",
-  "dusra din",
-  "aur koi din",
-  "baad ki date",
-  "agle mahine",
-  "next month",
-  "agle hafte",
-  "agle week",
-  "next week",
-  "ek hafte baad",
-  "do din baad",
-  "teen din baad",
-  "kal karo",
-  "parso karo",
-  "monday",
-  "tuesday",
-  "wednesday",
-  "thursday",
-  "friday",
-  "saturday",
-  "sunday",
-  "somwar",
-  "mangalwar",
-  "budhwar",
-  "guruwar",
-  "shukrawar",
-  "shaniwar",
-  "raviwar",
-  "tarikh",
-  "reschedule",
-  "time change",
-  "kal",
-  "parso",
-  "date kaise",
-  "din kaise",
-  "tarikh kaise",
-  "कैसे करें",
-  "तारीख बदल दो",
-  "तारीख बदलो",
-  "शेड्यूल बदलो",
-  "रीशेड्यूल करो",
-  "कोई और दिन",
-  "दूसरा दिन",
-  "अगले महीने",
-  "अगले हफ्ते",
-  "दो दिन बाद",
-  "तीन दिन बाद",
-  "एक हफ्ते बाद",
-  "कल करो",
-  "परसों करो",
-  "कल",
-  "परसों",
-  "समवार",  // Variant of Somvar (Monday)
-  "सोमवार",
-  "मंगल",    // Short for Mangalwar (Tuesday)
-  "मंगलवार",
-  "बुध",      // Short for Budhwar (Wednesday)
-  "बुधवार",
-  "गुरु",     // Short for Guruwar (Thursday)
-  "गुरुवार",
-  "शुक्र",    // Short for Shukrawar (Friday)
-  "शुक्रवार",
-  "शनि",     // Short for Shaniwar (Saturday)
-  "शनिवार",
-  "रवि",     // Short for Raviwar (Sunday)
-  "रविवार",
-  "तारीख",
+  "date change kar do","date badal do","date badlo","schedule badal do",
+  "reschedule karo","koi aur din","dusra din","aur koi din","baad ki date",
+  "agle mahine","next month","agle hafte","agle week","next week",
+  "ek hafte baad","do din baad","teen din baad","kal karo","parso karo",
+  "monday","tuesday","wednesday","thursday","friday","saturday","sunday",
+  "somwar","mangalwar","budhwar","guruwar","shukrawar","shaniwar","raviwar",
+  "tarikh","reschedule","time change","kal","parso",
+  "तारीख बदल दो","तारीख बदलो","शेड्यूल बदलो","रीशेड्यूल करो","कोई और दिन",
+  "दूसरा दिन","अगले महीने","अगले हफ्ते","दो दिन बाद","तीन दिन बाद",
+  "एक हफ्ते बाद","कल करो","परसों करो","कल","परसों",
+  "सोमवार","समवार","मंगल","मंगलवार","बुध","बुधवार",
+  "गुरु","गुरुवार","शुक्र","शुक्रवार","शनि","शनिवार","रवि","रविवार","तारीख",
 ];
 
-// FIX v5: Explicitly detect city names as PROVIDE_BRANCH intent
-const CITY_TOKENS = SERVICE_CENTERS.map((c) => normalise(c.city_name));
-const CITY_TOKENS_DEVANAGARI = Object.keys(HINDI_CITY_MAP);
+/* =====================================================================
+   PRE-COMPILED INTENT REGEXES  (built once at module load)
+   ===================================================================== */
+function buildIntentRegex(patterns) {
+  const escaped = patterns.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(escaped.join("|"), "u");
+}
+
+const REPEAT_RE       = buildIntentRegex(REPEAT_PATTERNS);
+const CONFUSION_RE    = buildIntentRegex(CONFUSION_PATTERNS);
+const CONFIRM_RE      = buildIntentRegex(CONFIRM_PATTERNS);
+const REJECT_RE       = buildIntentRegex(REJECT_PATTERNS);
+const ALREADY_DONE_RE = buildIntentRegex(ALREADY_DONE_PATTERNS);
+const DRIVER_RE       = buildIntentRegex(DRIVER_NOT_AVAILABLE_PATTERNS);
+const MACHINE_BUSY_RE = buildIntentRegex(MACHINE_BUSY_PATTERNS);
+const WORKING_FINE_RE = buildIntentRegex(WORKING_FINE_PATTERNS);
+const MONEY_ISSUE_RE  = buildIntentRegex(MONEY_ISSUE_PATTERNS);
+const CALL_LATER_RE   = buildIntentRegex(CALL_LATER_PATTERNS);
+const RESCHEDULE_RE   = buildIntentRegex(RESCHEDULE_PATTERNS);
+const STANDALONE_NAHI = /(?:^|\s)(?:nahi|nahin|नहीं|ना)(?:\s|$)/u;
 
 /* =====================================================================
    INTENT DETECTOR
-   Priority:
-   REPEAT > CONFUSION > ALREADY_DONE > DRIVER_NOT_AVAILABLE >
-   MACHINE_BUSY > WORKING_FINE > MONEY_ISSUE > CALL_LATER >
-   RESCHEDULE > CONFIRM > PROVIDE_BRANCH > REJECT > UNKNOWN
+   Priority: REPEAT > CONFUSION > ALREADY_DONE > DRIVER > MACHINE_BUSY
+           > WORKING_FINE > MONEY_ISSUE > CALL_LATER > RESCHEDULE
+           > CONFIRM > PROVIDE_BRANCH > REJECT > UNKNOWN
    ===================================================================== */
 function detectIntent(normText, rawText, cachedBranch = null) {
   if (!normText || normText.length === 0) return INTENT.UNCLEAR;
 
-  if (REPEAT_PATTERNS.some((p) => normText.includes(p))) return INTENT.REPEAT;
-  if (CONFUSION_PATTERNS.some((p) => normText.includes(p)))
-    return INTENT.CONFUSION;
-  if (ALREADY_DONE_PATTERNS.some((p) => normText.includes(p)))
-    return INTENT.ALREADY_DONE;
-  if (
-    DRIVER_NOT_AVAILABLE_PATTERNS.some((p) => normText.includes(p)) ||
-    hasDriverNotAvailableKeywords(normText)
-  )
-    return INTENT.DRIVER_NOT_AVAILABLE;
-  if (MACHINE_BUSY_PATTERNS.some((p) => normText.includes(p)))
-    return INTENT.MACHINE_BUSY;
-  if (WORKING_FINE_PATTERNS.some((p) => normText.includes(p)))
-    return INTENT.WORKING_FINE;
-  if (MONEY_ISSUE_PATTERNS.some((p) => normText.includes(p)))
-    return INTENT.MONEY_ISSUE;
-  if (CALL_LATER_PATTERNS.some((p) => normText.includes(p)))
-    return INTENT.CALL_LATER;
-
-  // FIX v7: Check RESCHEDULE FIRST so "kal jaipur mein karo" → RESCHEDULE (not PROVIDE_BRANCH)
-  // Only after ruling out date-based intents do we check for standalone city names
-  if (RESCHEDULE_PATTERNS.some((p) => normText.includes(p)))
-    return INTENT.RESCHEDULE;
-  if (CONFIRM_PATTERNS.some((p) => normText.includes(p))) return INTENT.CONFIRM;
-
-  // FIX v7: Use cached branch result instead of calling matchBranch again
-  if (cachedBranch) return INTENT.PROVIDE_BRANCH;
-
-  // FIX v5: "nahi" as a standalone word — use word boundary check
-  // Ensure it's not part of a CONFUSION phrase (those were caught above)
-  if (REJECT_PATTERNS.some((p) => normText.includes(p))) return INTENT.REJECT;
-  // Standalone "nahi" / "nahin" / "नहीं" as a whole word
-  if (/(?:^|\s)(?:nahi|nahin|नहीं|ना)(?:\s|$)/.test(normText))
-    return INTENT.REJECT;
+  if (REPEAT_RE.test(normText))                                           return INTENT.REPEAT;
+  if (CONFUSION_RE.test(normText))                                        return INTENT.CONFUSION;
+  if (ALREADY_DONE_RE.test(normText))                                     return INTENT.ALREADY_DONE;
+  if (DRIVER_RE.test(normText) || hasDriverNotAvailableKeywords(normText)) return INTENT.DRIVER_NOT_AVAILABLE;
+  if (MACHINE_BUSY_RE.test(normText))                                     return INTENT.MACHINE_BUSY;
+  if (WORKING_FINE_RE.test(normText))                                     return INTENT.WORKING_FINE;
+  if (MONEY_ISSUE_RE.test(normText))                                      return INTENT.MONEY_ISSUE;
+  if (CALL_LATER_RE.test(normText))                                       return INTENT.CALL_LATER;
+  if (RESCHEDULE_RE.test(normText))                                       return INTENT.RESCHEDULE;
+  if (CONFIRM_RE.test(normText))                                          return INTENT.CONFIRM;
+  if (cachedBranch)                                                        return INTENT.PROVIDE_BRANCH;
+  if (REJECT_RE.test(normText) || STANDALONE_NAHI.test(normText))        return INTENT.REJECT;
 
   return INTENT.UNKNOWN;
 }
 
 /* =====================================================================
-   RESPONSE CATALOGUE (kept from v4, used as NLP-level fallbacks)
-   Voice.service.js overrides these with its own V.* voice lines for
-   key states — keeping both means NLP is self-contained for testing.
+   RESPONSE CATALOGUE (NLP-level; voice.service.js overrides key states)
    ===================================================================== */
 const R = {
-  greeting: (name) =>
-    `Namaste ${name} ji, main Rajesh JSB Motors se baat kar raha hun. ` +
-    `Aapki machine ki 500 Hour Service due hai. ` +
-    `Kya main aapke liye yeh service is hafte mein book kar sakta hun?`,
-
-  askDate: (name) =>
-    `Zaroor ${name} ji! Aap batao — kaunsa din ya tarikh aapke liye theek rahega?`,
-
-  askReason: (name) =>
-    `Koi baat nahi ${name} ji. Kya aap bata sakte hain abhi kyun nahi karwani service?`,
-
-  askAlreadyDoneDetails: (name) =>
-    `${name} ji, bahut acha! Kab, kahan aur kaunsi service karwai thi? Thoda batayein.`,
-
-  objectionDriverNotAvailable: (name) =>
-    `Samajh gaya ${name} ji. Koi aur date bata dijiye — jab driver available hoga.`,
-
-  objectionMachineBusy: (name) =>
-    `Samajh aaya ${name} ji. Koi aisi date batao jab thodi der ke liye machine available ho.`,
-
-  objectionWorkingFine: (name) =>
-    `${name} ji, machine thik hai toh acha hai. Lekin 500 hour service se life aur badhti hai. Kab karein?`,
-
-  objectionMoneyIssue: (name) =>
-    `${name} ji, tension nahi — agle mahine ki date fix kar dete hain, abhi kuch payment nahi.`,
-
-  objectionCallLater: (name) =>
-    `${name} ji, koi ek din bata do — main us din ke liye service mark kar deta hun.`,
-
-  persuasionFinal: (name) =>
-    `${name} ji, 500 hour service skip karna machine ke liye theek nahi. Ek baar sochiye — kaunsa din suitable hai?`,
-
-  askBranch: (name) =>
-    `${name} ji, aapki machine abhi kis city mein hai? Jaise Jaipur, Kota, Ajmer, Alwar, Udaipur, Sikar...`,
-
-  askBranchAgain: (name) =>
-    `${name} ji, city ka naam clearly batayein — jaise Jaipur, Kota, Ajmer, ya Udaipur.`,
-
-  confirmBooking: (name, branchName, branchCity, date) =>
-    `${name} ji, aapki service ${branchName} (${branchCity}) mein ${date} ko book ho gayi hai. Dhanyawad!`,
-
-  alreadyDoneSaved: (name) =>
-    `${name} ji, shukriya. Hum record update kar dete hain. Dhanyawad, Namaste.`,
-
-  rejected: (name) =>
-    `Theek hai ${name} ji. Jab bhi zaroorat ho, JSB Motors mein call kar lena. Dhanyawad, Namaste.`,
-
-  tooManyUnknown: (name) =>
-    `${name} ji, hum baad mein sampark karenge. Dhanyawad, Namaste.`,
-
-  confirmDate: (name, date) =>
-    `${name} ji, kya main aapki service ${date} ke liye book kar dun? Haan ya nahi boliye.`,
-
-  confusionClarify: (name) =>
-    `${name} ji, main JSB Motors se service reminder ke liye call kar raha hun. Kya service book karwani hai?`,
-
-  politeAskAgain: (name) =>
-    `${name} ji, samajh nahi aaya. Kya service book karwani hai? Haan ya nahi boliye.`,
+  greeting:     (n)         => `Namaste ${n} ji, main Rajesh JSB Motors se. Aapki machine ki service due hai. Kya book kar dun?`,
+  askDate:      (n)         => `${n} ji, kaunsa din theek rahega? Kal, parso, somwar, ya tarikh boliye.`,
+  askReason:    (n)         => `Koi baat nahi ${n} ji. Batao kya dikkat hai — shayad kuch kar sakein.`,
+  askAlreadyDoneDetails: (n)=> `${n} ji, bahut acha! Kab, kahan aur kaunsi service karwai thi?`,
+  objectionDriverNotAvailable: (n)=>`Samajh gaya ${n} ji. Driver ke aate hi ek din bata dena — fix kar denge.`,
+  objectionMachineBusy: (n) => `Samajh aaya ${n} ji. Jab machine thodi der ke liye free ho sake, tab ka din batao.`,
+  objectionWorkingFine: (n) => `${n} ji, machine thik hai — acha hai. 500 hour service se life aur badhti hai. Kab karein?`,
+  objectionMoneyIssue:  (n) => `Tension nahi ${n} ji. Agle mahine ki date fix karo — payment baad mein.`,
+  objectionCallLater:   (n) => `Theek hai ${n} ji. Koi ek din bata do — main mark kar leta hun.`,
+  persuasionFinal:      (n) => `${n} ji, service skip se baad mein zyada kharcha aata hai. Ek tarikh batao — baaki sab hum karte hain.`,
+  askBranch:    (n)         => `${n} ji, machine abhi kis city mein hai? Jaipur, Kota, Ajmer, Alwar, Udaipur, ya Sikar?`,
+  askBranchAgain: (n)       => `${n} ji, city clearly boliye — Jaipur, Kota, Ajmer, ya Udaipur?`,
+  confirmBooking:(n,bn,bc,d)=> `${n} ji, service ${bn} (${bc}) mein ${d} ko book ho gayi. Dhanyawad!`,
+  alreadyDoneSaved: (n)     => `${n} ji, shukriya. Record update ho gaya. Agli service ka reminder pehle aayega. Dhanyawad!`,
+  rejected:     (n)         => `Theek hai ${n} ji. Jab zaroorat ho, JSB Motors mein call karna. Dhanyawad!`,
+  tooManyUnknown:(n)        => `${n} ji, hum baad mein sampark karenge. Dhanyawad!`,
+  confirmDate:  (n, d)      => `${n} ji, ${d} ko book kar dun? Haan ya nahi boliye.`,
+  confusionClarify:(n)      => `${n} ji, main JSB Motors se service reminder ke liye call kar raha hun. Service book karwani hai?`,
+  politeAskAgain:(n)        => `${n} ji, samajh nahi aaya. Haan ya nahi boliye.`,
 };
 
 /* =====================================================================
    CORE EXPORT: processUserInput
    ===================================================================== */
 export function processUserInput(userText, sessionData) {
-  const normText = normalise(userText);
-  // FIX v7: Cache branch matching — don't call it twice (once in detectIntent, once in processUserInput)
+  const normText    = normalise(userText);
   const cachedBranch = matchBranch(userText);
-  const intent = detectIntent(normText, userText, cachedBranch);
-  const state = sessionData.state || "awaiting_initial_decision";
-  const name = sessionData.customerName || "sir";
-  const unknownStreak = sessionData.unknownStreak || 0;
-  const persuasionCount = sessionData.persuasionCount || 0;
+  const intent      = detectIntent(normText, userText, cachedBranch);
+  const state       = sessionData.state || "awaiting_initial_decision";
+  const name        = sessionData.customerName || "sir";
+  const unknownStreak    = sessionData.unknownStreak    || 0;
+  const persuasionCount  = sessionData.persuasionCount  || 0;
 
-  /* ── Build result helper ──────────────────────────────────────────── */
-  const result = (
-    replyText,
-    nextState,
-    endCall,
-    preferredDate = null,
-    extractedBranch = null,
-  ) => {
+  const result = (replyText, nextState, endCall, preferredDate = null, extractedBranch = null) => {
     const resolvedDate = preferredDate ? resolveDate(preferredDate) : null;
-    return {
-      replyText,
-      nextState,
-      endCall,
-      preferredDate,
-      resolvedDate,
-      extractedBranch,
-      intent,
-    };
+    return { replyText, nextState, endCall, preferredDate, resolvedDate, extractedBranch, intent };
   };
 
-  /* ── Global guard: too many consecutive unknowns ──────────────────── */
-  if (unknownStreak >= 3) {
-    return result(R.tooManyUnknown(name), "ended", true);
-  }
-
-  /* ── Global: REPEAT ───────────────────────────────────────────────── */
+  /* ── Global guards ── */
+  if (unknownStreak >= 3) return result(R.tooManyUnknown(name), "ended", true);
   if (intent === INTENT.REPEAT) {
     const lastMsg = sessionData.lastMessage || "";
-    const replay = lastMsg
-      ? `${name} ji, main dobara bol raha hun — ${lastMsg}`
-      : R.greeting(name);
-    return result(replay, state, false);
+    return result(lastMsg ? `${name} ji, dobara bol raha hun — ${lastMsg}` : R.greeting(name), state, false);
   }
-
-  /* ── Global: CONFUSION ───────────────────────────────────────────── */
-  if (intent === INTENT.CONFUSION) {
-    return result(R.confusionClarify(name), "awaiting_initial_decision", false);
-  }
-
-  /* ── Global: UNCLEAR ─────────────────────────────────────────────── */
-  if (intent === INTENT.UNCLEAR) {
-    return result(R.politeAskAgain(name), state, false);
-  }
+  if (intent === INTENT.CONFUSION) return result(R.confusionClarify(name), "awaiting_initial_decision", false);
+  if (intent === INTENT.UNCLEAR)   return result(R.politeAskAgain(name), state, false);
 
   /* ══════════════════════════════════════════════════════════════════
      STATE MACHINE
      ══════════════════════════════════════════════════════════════════ */
-
   switch (state) {
-    /* ── STEP 2: Initial decision ──────────────────────────────────── */
+
+    /* ── STEP 2: Initial decision ── */
     case "awaiting_initial_decision": {
-      if (intent === INTENT.CONFIRM) {
-        return result(R.askDate(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.ALREADY_DONE) {
-        return result(
-          R.askAlreadyDoneDetails(name),
-          "awaiting_service_details",
-          false,
-        );
-      }
-      if (intent === INTENT.REJECT) {
-        return result(R.askReason(name), "awaiting_reason", false);
-      }
-      if (intent === INTENT.DRIVER_NOT_AVAILABLE) {
-        return result(
-          R.objectionDriverNotAvailable(name),
-          "awaiting_date",
-          false,
-        );
-      }
-      if (intent === INTENT.MACHINE_BUSY) {
-        return result(R.objectionMachineBusy(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.WORKING_FINE) {
-        return result(R.objectionWorkingFine(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.MONEY_ISSUE) {
-        return result(R.objectionMoneyIssue(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.CALL_LATER) {
-        return result(R.objectionCallLater(name), "awaiting_date", false);
-      }
+      if (intent === INTENT.CONFIRM)              return result(R.askDate(name), "awaiting_date", false);
+      if (intent === INTENT.ALREADY_DONE)         return result(R.askAlreadyDoneDetails(name), "awaiting_service_details", false);
+      if (intent === INTENT.REJECT)               return result(R.askReason(name), "awaiting_reason", false);
+      if (intent === INTENT.DRIVER_NOT_AVAILABLE) return result(R.objectionDriverNotAvailable(name), "awaiting_date", false);
+      if (intent === INTENT.MACHINE_BUSY)         return result(R.objectionMachineBusy(name), "awaiting_date", false);
+      if (intent === INTENT.WORKING_FINE)         return result(R.objectionWorkingFine(name), "awaiting_date", false);
+      if (intent === INTENT.MONEY_ISSUE)          return result(R.objectionMoneyIssue(name), "awaiting_date", false);
+      if (intent === INTENT.CALL_LATER)           return result(R.objectionCallLater(name), "awaiting_date", false);
       if (intent === INTENT.RESCHEDULE || intent === INTENT.PROVIDE_DATE) {
-        const preferredDate = extractPreferredDate(userText);
-        if (preferredDate) {
-          const display = resolveDate(preferredDate)?.display || preferredDate;
-          return result(
-            R.confirmDate(name, display),
-            "awaiting_date_confirm",
-            false,
-            preferredDate,
-          );
-        }
+        const pd = extractPreferredDate(userText);
+        if (pd) return result(R.confirmDate(name, resolveDate(pd)?.display || pd), "awaiting_date_confirm", false, pd);
         return result(R.askDate(name), "awaiting_date", false);
       }
-      if (intent === INTENT.PROVIDE_BRANCH) {
-        // Customer jumping straight to city — ask for date first
-        return result(R.askDate(name), "awaiting_date", false);
-      }
+      if (intent === INTENT.PROVIDE_BRANCH) return result(R.askDate(name), "awaiting_date", false);
       return result(R.politeAskAgain(name), state, false);
     }
 
-    /* ── STEP 3: Reason / objection handling ───────────────────────── */
+    /* ── STEP 3: Reason / objection handling ── */
     case "awaiting_reason": {
-      if (intent === INTENT.RESCHEDULE || intent === INTENT.PROVIDE_DATE) {
-        const preferredDate = extractPreferredDate(userText);
-        if (preferredDate) {
-          const display = resolveDate(preferredDate)?.display || preferredDate;
-          return result(
-            R.confirmDate(name, display),
-            "awaiting_date_confirm",
-            false,
-            preferredDate,
-          );
-        }
-        return result(R.askDate(name), "awaiting_date", false);
-      }
-
-      // FIX v5: CONFIRM in awaiting_reason — check for co-occurring objection keywords
-      // before treating as "yes book it". If objection keyword present, route accordingly.
       if (intent === INTENT.CONFIRM) {
-        if (DRIVER_NOT_AVAILABLE_PATTERNS.some((p) => normText.includes(p))) {
-          return result(
-            R.objectionDriverNotAvailable(name),
-            "awaiting_date",
-            false,
-          );
-        }
-        if (MACHINE_BUSY_PATTERNS.some((p) => normText.includes(p))) {
-          return result(R.objectionMachineBusy(name), "awaiting_date", false);
-        }
-        // Genuine confirm — ask for date
+        // Check for co-occurring objection to avoid false "yes, book it"
+        if (DRIVER_RE.test(normText))     return result(R.objectionDriverNotAvailable(name), "awaiting_date", false);
+        if (MACHINE_BUSY_RE.test(normText)) return result(R.objectionMachineBusy(name), "awaiting_date", false);
+        const pd = extractPreferredDate(userText);
+        if (pd) return result(R.confirmDate(name, resolveDate(pd)?.display || pd), "awaiting_date_confirm", false, pd);
         return result(R.askDate(name), "awaiting_date", false);
       }
-
-      if (intent === INTENT.DRIVER_NOT_AVAILABLE) {
-        return result(
-          R.objectionDriverNotAvailable(name),
-          "awaiting_date",
-          false,
-        );
+      if (intent === INTENT.RESCHEDULE || intent === INTENT.PROVIDE_DATE) {
+        const pd = extractPreferredDate(userText);
+        if (pd) return result(R.confirmDate(name, resolveDate(pd)?.display || pd), "awaiting_date_confirm", false, pd);
+        return result(R.askDate(name), "awaiting_date", false);
       }
-      if (intent === INTENT.MACHINE_BUSY) {
-        return result(R.objectionMachineBusy(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.WORKING_FINE) {
-        return result(R.objectionWorkingFine(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.MONEY_ISSUE) {
-        return result(R.objectionMoneyIssue(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.CALL_LATER) {
-        return result(R.objectionCallLater(name), "awaiting_date", false);
-      }
+      if (intent === INTENT.DRIVER_NOT_AVAILABLE) return result(R.objectionDriverNotAvailable(name), "awaiting_date", false);
+      if (intent === INTENT.MACHINE_BUSY)          return result(R.objectionMachineBusy(name), "awaiting_date", false);
+      if (intent === INTENT.WORKING_FINE)          return result(R.objectionWorkingFine(name), "awaiting_date", false);
+      if (intent === INTENT.MONEY_ISSUE)           return result(R.objectionMoneyIssue(name), "awaiting_date", false);
+      if (intent === INTENT.CALL_LATER)            return result(R.objectionCallLater(name), "awaiting_date", false);
       if (intent === INTENT.REJECT) {
-        if (persuasionCount === 0) {
-          return result(
-            R.persuasionFinal(name),
-            "awaiting_reason_persisted",
-            false,
-          );
-        }
+        if (persuasionCount === 0) return result(R.persuasionFinal(name), "awaiting_reason_persisted", false);
         return result(R.rejected(name), "ended", true);
       }
-      // Unknown reason — try to persuade
-      return result(
-        R.persuasionFinal(name),
-        "awaiting_reason_persisted",
-        false,
-      );
+      return result(R.persuasionFinal(name), "awaiting_reason_persisted", false);
     }
 
-    /* ── After first persuasion attempt ───────────────────────────── */
+    /* ── After first persuasion attempt ── */
     case "awaiting_reason_persisted": {
-      if (
-        intent === INTENT.CONFIRM ||
-        intent === INTENT.RESCHEDULE ||
-        intent === INTENT.PROVIDE_DATE
-      ) {
-        const preferredDate = extractPreferredDate(userText);
-        if (preferredDate) {
-          const display = resolveDate(preferredDate)?.display || preferredDate;
-          return result(
-            R.confirmDate(name, display),
-            "awaiting_date_confirm",
-            false,
-            preferredDate,
-          );
-        }
+      if (intent === INTENT.CONFIRM || intent === INTENT.RESCHEDULE || intent === INTENT.PROVIDE_DATE) {
+        const pd = extractPreferredDate(userText);
+        if (pd) return result(R.confirmDate(name, resolveDate(pd)?.display || pd), "awaiting_date_confirm", false, pd);
         return result(R.askDate(name), "awaiting_date", false);
       }
-      if (intent === INTENT.DRIVER_NOT_AVAILABLE) {
-        return result(
-          R.objectionDriverNotAvailable(name),
-          "awaiting_date",
-          false,
-        );
-      }
-      if (intent === INTENT.MACHINE_BUSY) {
-        return result(R.objectionMachineBusy(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.WORKING_FINE) {
-        return result(R.objectionWorkingFine(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.MONEY_ISSUE) {
-        return result(R.objectionMoneyIssue(name), "awaiting_date", false);
-      }
-      if (intent === INTENT.CALL_LATER) {
-        return result(R.objectionCallLater(name), "awaiting_date", false);
-      }
-      // FIX v5: persuasionCount is always ≥ 1 here (incremented in voice.service after
-      // the turn that put us into this state). Any further REJECT ends the call.
+      if (intent === INTENT.DRIVER_NOT_AVAILABLE) return result(R.objectionDriverNotAvailable(name), "awaiting_date", false);
+      if (intent === INTENT.MACHINE_BUSY)          return result(R.objectionMachineBusy(name), "awaiting_date", false);
+      if (intent === INTENT.WORKING_FINE)          return result(R.objectionWorkingFine(name), "awaiting_date", false);
+      if (intent === INTENT.MONEY_ISSUE)           return result(R.objectionMoneyIssue(name), "awaiting_date", false);
+      if (intent === INTENT.CALL_LATER)            return result(R.objectionCallLater(name), "awaiting_date", false);
+      // FIX v9: Check for any date token in UNKNOWN/REJECT utterances before giving up
+      const dateTry = extractPreferredDate(userText);
+      if (dateTry) return result(R.confirmDate(name, resolveDate(dateTry)?.display || dateTry), "awaiting_date_confirm", false, dateTry);
       return result(R.rejected(name), "ended", true);
     }
 
-    /* ── STEP 4: Date capture ──────────────────────────────────────── */
+    /* ── STEP 4: Date capture ── */
     case "awaiting_date": {
-      const preferredDate = extractPreferredDate(userText);
-      if (preferredDate) {
-        const display = resolveDate(preferredDate)?.display || preferredDate;
-        return result(
-          R.confirmDate(name, display),
-          "awaiting_date_confirm",
-          false,
-          preferredDate,
-        );
-      }
+      const pd = extractPreferredDate(userText);
+      if (pd) return result(R.confirmDate(name, resolveDate(pd)?.display || pd), "awaiting_date_confirm", false, pd);
 
-      // FIX v8: CONFIRM without extracted date — check for contextual date cues
-      // If customer says "thik hai" (OK) with date keyword, treat as acceptance + default to tomorrow
+      // FIX v9: CONFIRM without extracted date → do NOT silently default to tomorrow.
+      // Re-ask so customer explicitly states a day.
       if (intent === INTENT.CONFIRM) {
-        const hasDateKeyword = /तारीख|tarikh|date|din|dino/u.test(normText);
-        if (hasDateKeyword || userText.length < 15) {
-          // Short confirmation + date context = accept with default tomorrow
-          const defaultDate = "कल";
-          const display = resolveDate(defaultDate)?.display || defaultDate;
-          return result(
-            R.confirmDate(name, display),
-            "awaiting_date_confirm",
-            false,
-            defaultDate,
-          );
-        }
-        // Empty or generic confirm without context — ask explicitly
-        return result(R.askDate(name), state, false);
+        return result(`${name} ji, kaunsa din theek rahega batao — kal, somwar, ya 15 tarikh.`, state, false);
       }
+      if (intent === INTENT.REJECT)                    return result(R.askBranch(name), "awaiting_branch", false);
+      if (intent === INTENT.RESCHEDULE || intent === INTENT.PROVIDE_DATE) return result(R.askDate(name), state, false);
+      if (intent === INTENT.DRIVER_NOT_AVAILABLE)      return result(R.objectionDriverNotAvailable(name), state, false);
+      if (intent === INTENT.MACHINE_BUSY)              return result(R.objectionMachineBusy(name), state, false);
+      if (intent === INTENT.WORKING_FINE)              return result(R.objectionWorkingFine(name), state, false);
+      if (intent === INTENT.MONEY_ISSUE)               return result(R.objectionMoneyIssue(name), state, false);
+      if (intent === INTENT.CALL_LATER)                return result(R.objectionCallLater(name), state, false);
 
-      // FIX v7: Don't end call on REJECT in awaiting_date — move to branch collection
-      // This ensures we collect location info before ending the call
-      if (intent === INTENT.REJECT) {
-        return result(R.askBranch(name), "awaiting_branch", false);
-      }
-
-      // FIX v8: Handle RESCHEDULE and PROVIDE_DATE in awaiting_date
-      // These intents mean customer is asking for date (even without specific date given)
-      if (intent === INTENT.RESCHEDULE || intent === INTENT.PROVIDE_DATE) {
-        // Already tried extractPreferredDate above, so default to tomorrow
-        const defaultDate = "कल";
-        const display = resolveDate(defaultDate)?.display || defaultDate;
-        return result(
-          R.confirmDate(name, display),
-          "awaiting_date_confirm",
-          false,
-          defaultDate,
-        );
-      }
-
-      if (intent === INTENT.DRIVER_NOT_AVAILABLE)
-        return result(R.objectionDriverNotAvailable(name), state, false);
-      if (intent === INTENT.MACHINE_BUSY)
-        return result(R.objectionMachineBusy(name), state, false);
-      if (intent === INTENT.WORKING_FINE)
-        return result(R.objectionWorkingFine(name), state, false);
-      if (intent === INTENT.MONEY_ISSUE)
-        return result(R.objectionMoneyIssue(name), state, false);
-      if (intent === INTENT.CALL_LATER)
-        return result(R.objectionCallLater(name), state, false);
-
-      return result(
-        `${name} ji, kaunsa din ya tarikh suvidhajanakl rahega? Jaise kal, somwar, ya 15 tarikh boliye.`,
-        state,
-        false,
-      );
+      return result(`${name} ji, kaunsa din batayenge? Kal, somwar, ya 15 tarikh boliye.`, state, false);
     }
 
-    /* ── Date confirmation ─────────────────────────────────────────── */
+    /* ── Date confirmation ── */
     case "awaiting_date_confirm": {
       const date = sessionData.preferredDate || null;
-      const display = date
-        ? resolveDate(date)?.display || date
-        : "nirdharit tarikh";
+      const display = date ? resolveDate(date)?.display || date : "nirdharit tarikh";
 
-      if (intent === INTENT.CONFIRM) {
+      if (intent === INTENT.CONFIRM)
         return result(R.askBranch(name), "awaiting_branch", false, date);
-      }
-      
-      // FIX v7: Distinguish between "not now" (reschedule) and firm rejection
-      // "अभी नहीं" means postpone — still get date and location
+
+      // FIX v9: REJECT in awaiting_date_confirm clears date before going back
       if (intent === INTENT.REJECT) {
-        // Check if it's a soft rejection ("अभी नहीं", "शायद") vs firm ("बिल्कुल नहीं", "कभी नहीं")
-        if (/abhi|now|shayad|maybe|later|thoda time/i.test(userText) || 
-            /अभी|अभी नहीं|शायद|बाद में|थोड़ा/i.test(userText)) {
-          // Soft rejection — ask for future date but PRESERVE current date
-          return result(R.objectionCallLater(name), "awaiting_date", false, date);
+        if (/abhi|shayad|maybe|later|thoda time|अभी|शायद|बाद में|थोड़ा/i.test(userText)) {
+          // Soft: postpone — clear date and re-ask
+          return result(R.objectionCallLater(name), "awaiting_date", false, null);
         }
-        // Firm rejection — but still try to get branch info before ending
-        return result(R.askBranch(name), "awaiting_branch", false, date);
-      }
-      
-      if (intent === INTENT.RESCHEDULE) {
-        return result(R.askDate(name), "awaiting_date", false, date);
+        // Hard rejection of this date — go back, clear date
+        return result(R.askDate(name), "awaiting_date", false, null);
       }
 
-      // FIX v5: If customer gives a NEW date in this state — update and re-confirm
+      if (intent === INTENT.RESCHEDULE)
+        return result(R.askDate(name), "awaiting_date", false, null);
+
+      // Customer gives a new date inline
       const newDate = extractPreferredDate(userText);
       if (newDate) {
         const newDisplay = resolveDate(newDate)?.display || newDate;
@@ -1624,65 +620,33 @@ export function processUserInput(userText, sessionData) {
       return result(R.confirmDate(name, display), state, false, date);
     }
 
-    /* ── STEP 5: Branch matching ────────────────────────────────────── */
+    /* ── STEP 5: Branch matching ── */
     case "awaiting_branch": {
       const branch = matchBranch(userText);
-      const date = sessionData.preferredDate || null;
-      const display = date
-        ? resolveDate(date)?.display || date
-        : "nirdharit tarikh";
+      const date   = sessionData.preferredDate || null;
+      const display= date ? resolveDate(date)?.display || date : "nirdharit tarikh";
 
-      // FIX v7: If no date was collected at all and customer is in branch state,
-      // ask them to confirm a date first before finishing
-      if (!date && intent !== INTENT.REJECT) {
+      if (!date && intent !== INTENT.REJECT)
         return result(R.askDate(name), "awaiting_date", false);
-      }
 
-      if (branch) {
-        return result(
-          R.confirmBooking(name, branch.name, branch.city, display || "nirdharit tarikh"),
-          "ended",
-          true,
-          date,
-          branch,
-        );
-      }
+      if (branch)
+        return result(R.confirmBooking(name, branch.name, branch.city, display), "ended", true, date, branch);
 
-      // FIX v7: If user firmly rejects while in branch state, try persuasion one more time
       if (intent === INTENT.REJECT) {
-        // Offer persuasion with the collected date to make it concrete
-        if (date) {
-          const display = resolveDate(date)?.display || date;
-          return result(
-            R.persuasionFinal(name),
-            state,
-            false,
-            date,
-          );
-        }
-        // No date at all — ask for branch once more
+        if (date) return result(R.persuasionFinal(name), state, false, date);
         return result(R.askBranch(name), state, false);
       }
 
-      // FIX v5: Customer says something unrecognised — still try to extract city
-      // before giving up (handles "Jaipur ke paas wali jagah" → Jaipur matches)
       return result(R.askBranchAgain(name), state, false, date);
     }
 
-    /* ── STEP 6: Already done details ──────────────────────────────── */
-    case "awaiting_service_details": {
+    /* ── STEP 6: Already done details ── */
+    case "awaiting_service_details":
       return result(R.alreadyDoneSaved(name), "ended", true);
-    }
 
     default:
       return result(R.tooManyUnknown(name), "ended", true);
   }
 }
 
-export default {
-  processUserInput,
-  extractPreferredDate,
-  matchBranch,
-  INTENT,
-  SERVICE_CENTERS,
-};
+export default { processUserInput, extractPreferredDate, matchBranch, INTENT, SERVICE_CENTERS };
