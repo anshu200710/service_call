@@ -71,33 +71,33 @@ function normalise(raw) {
    HINDI CITY NAME MAP  (expanded with Rajasthani / alternate STT variants)
    ===================================================================== */
 const HINDI_CITY_MAP = {
-  अजमेर:"ajmer",    अजमेरा:"ajmer",
-  अलवर:"alwar",     अलावर:"alwar",
-  बांसवाड़ा:"banswara", बाँसवाड़ा:"banswara", बासवाड़ा:"banswara",
-  भरतपुर:"bharatpur",  भारतपुर:"bharatpur",
-  भीलवाड़ा:"bhilwara", भिलवाड़ा:"bhilwara", भिलवारा:"bhilwara",
-  भिवाड़ी:"bhiwadi",  भीवाड़ी:"bhiwadi",  भिवादी:"bhiwadi",
-  दौसा:"dausa",     दावसा:"dausa",
-  धौलपुर:"dholpur", धोलपुर:"dholpur",
-  डूंगरपुर:"dungarpur", डुंगरपुर:"dungarpur", दुंगरपुर:"dungarpur",
-  "गोनेर रोड":"goner road",
-  जयपुर:"jaipur",   जेपुर:"jaipur",    जैपुर:"jaipur",
-  झालावाड़:"jhalawar", "झाला वाड़":"jhalawar",
-  झुंझुनू:"jhunjhunu", झुंझुनु:"jhunjhunu", झुझुनू:"jhunjhunu",
-  करौली:"karauli",  करोली:"karauli",
-  केकड़ी:"kekri",   केकरी:"kekri",
-  कोटा:"kota",      कोट:"kota",
-  कोटपूतली:"kotputli",
-  "नीम का थाना":"neem ka thana",
-  निम्बाहेड़ा:"nimbahera", निंबाहेड़ा:"nimbahera",
-  प्रतापगढ़:"pratapgarh",
-  राजसमंद:"rajsamand", राजसमन्द:"rajsamand",
-  रामगंजमंडी:"ramganjmandi", "रामगंज मंडी":"ramganjmandi",
-  सीकर:"sikar",     सिकर:"sikar",
-  सुजानगढ़:"sujangarh",
-  टोंक:"tonk",
-  उदयपुर:"udaipur", उदैपुर:"udaipur",
-  वीकेआईए:"vkia",
+  अजमेर:"ajmer",    अजमेरा:"ajmer",	अजेमेर:"ajmer",
+  अलवर:"alwar",     अलावर:"alwar",	अलबर:"alwar",	अलुवर:"alwar",
+  बांसवाड़ा:"banswara", बाँसवाड़ा:"banswara", बासवाड़ा:"banswara", बांसवाड़:"banswara",
+  भरतपुर:"bharatpur",  भारतपुर:"bharatpur", भरतपूर:"bharatpur",
+  भीलवाड़ा:"bhilwara", भिलवाड़ा:"bhilwara", भिलवारा:"bhilwara", भीलवाड़:"bhilwara", भिलबाड़:"bhilwara",
+  भिवाड़ी:"bhiwadi",  भीवाड़ी:"bhiwadi",  भिवादी:"bhiwadi", भिवाडी:"bhiwadi",
+  दौसा:"dausa",     दावसा:"dausa",	दौशा:"dausa",	दाउसा:"dausa",
+  धौलपुर:"dholpur", धोलपुर:"dholpur", धोलपूर:"dholpur", डौलपुर:"dholpur",
+  डूंगरपुर:"dungarpur", डुंगरपुर:"dungarpur", दुंगरपुर:"dungarpur", दूंगरपुर:"dungarpur", डूंगरपूर:"dungarpur",
+  "गोनेर रोड":"goner road", गोनर:"goner", गोनेर:"goner",
+  जयपुर:"jaipur",   जेपुर:"jaipur",    जैपुर:"jaipur", जयपूर:"jaipur",
+  झालावाड़:"jhalawar", "झाला वाड़":"jhalawar", झालवाड़:"jhalawar", झालवाड:"jhalawar",
+  झुंझुनू:"jhunjhunu", झुंझुनु:"jhunjhunu", झुझुनू:"jhunjhunu", झुजुनु:"jhunjhunu",
+  करौली:"karauli",  करोली:"karauli", करौलि:"karauli",
+  केकड़ी:"kekri",   केकरी:"kekri", काकरी:"kekri", केकरा:"kekri",
+  कोटा:"kota",      कोट:"kota", कोटा:"kota",
+  कोटपूतली:"kotputli", कोटपुतली:"kotputli",
+  "नीम का थाना":"neem ka thana", नीम:"neem", नीमकाथाना:"neem ka thana",
+  निम्बाहेड़ा:"nimbahera", निंबाहेड़ा:"nimbahera", निंबहेड़ा:"nimbahera",
+  प्रतापगढ़:"pratapgarh", प्रतापगड़:"pratapgarh", प्रतापगड:"pratapgarh",
+  राजसमंद:"rajsamand", राजसमन्द:"rajsamand", राजसमंध:"rajsamand",
+  रामगंजमंडी:"ramganjmandi", "रामगंज मंडी":"ramganjmandi", रामगंजमंडि:"ramganjmandi",
+  सीकर:"sikar",     सिकर:"sikar", सीकार:"sikar",
+  सुजानगढ़:"sujangarh", सुजानगड़:"sujangarh", सुजानगड:"sujangarh",
+  टोंक:"tonk", टोङ्क:"tonk", तोंक:"tonk",
+  उदयपुर:"udaipur", उदैपुर:"udaipur", उदपुर:"udaipur", उदयपूर:"udaipur",
+  वीकेआईए:"vkia", वीके:"vkia",
 };
 
 /* =====================================================================
@@ -275,24 +275,27 @@ const REPEAT_PATTERNS = [
   "suna nahi","suna nahi aapka","sunai nahi diya","sunai nahi",
   "awaz nahi aayi","awaz nahi","awaz kam hai","awaaz nahi",
   "samjha nahi","samjhi nahi","samajh nahi aaya","samajh nahi",
-  "nahi samjha","nahi samjhi","kuch nahi suna",
+  "nahi samjha","nahi samjhi","kuch nahi suna","kuch suna nahi",
   "door se bol rahe","network problem","network kharab","call cut",
   "dheere boliye","dheere bolo","thoda dheere","slowly boliye",
-  "jaldi mat boliye","clear nahi tha","clear nahi",
-  "thoda loud boliye","aur loud","thoda tez boliye",
-  "repeat karo","repeat karein","repeat please","say again",
-  "kya tha number","number kya tha","address kya tha",
+  "jaldi mat boliye","clear nahi tha","clear nahi","saaf boliye","spasht boliye",
+  "thoda loud boliye","aur loud","thoda tez boliye","tez boliye",
+  "repeat karo","repeat karein","repeat please","say again","again","once more",
+  "kya tha number","number kya tha","address kya tha","kya kuch kaha",
   "mujhe nahi suna","yeh kya tha","line kharab hai","connection kharab",
+  "voice clear nahi","baat samajh nahi","awaak tez karo","taliyaan ayi","network issue",
   // English
-  "repeat","come again","excuse me","pardon","what","huh",
-  "could not hear","did not hear","cant hear",
-  "please repeat","can you repeat","please say again",
-  "speak slowly","slow down","too fast","what was that",
+  "repeat","come again","excuse me","pardon","what","huh","eh","sorry",
+  "could not hear","did not hear","cant hear","didn't hear","can not hear",
+  "please repeat","can you repeat","please say again","say that again",
+  "speak slowly","slow down","too fast","what was that","that was","once again",
+  "can't hear you","cannot hear", "didn't catch", "didn't catch that",
   // Devanagari
   "दोबारा बोलो","दोबारा बोलिए","फिर से बोलो","फिर से बोलिए","एक बार और",
   "क्या कहा","क्या बोले","नहीं सुना","आवाज़ नहीं","धीरे बोलिए","साफ बोलिए",
-  "समझ नहीं","समझ नहीं आया","नहीं समझा","कुछ नहीं सुना", "मैं सुना नहीं।",
-  "नेटवर्क खराब","कॉल कट","दूर लगा","साफ़ नहीं था",
+  "समझ नहीं","समझ नहीं आया","नहीं समझा","कुछ नहीं सुना","मैं सुना नहीं",
+  "नेटवर्क खराब","कॉल कट","दूर लगा","साफ़ नहीं था","एक बार फिर से",
+  "स्पष्ट बोलिए","तेज़ बोलिए","फिर कहो","दोबारा कहो","ठीक से सुनाई नहीं",
 ];
 
 /* ── CONFUSION — greatly expanded ── */
@@ -300,30 +303,43 @@ const CONFUSION_PATTERNS = [
   // Identity / wrong machine
   "kaunsi machine","konsi machine","kaun si machine","kaunsa service",
   "meri machine nahi","galat machine","galat number","yeh meri nahi",
-  "yeh kiska number hai","kiski machine","kon sa number",
-  "mujhe nahi pehchana","yeh kya number hai","kaunsa model",
-  "mere naam se kyun","mere naam pe","kaun bol raha",
-  "kis company se","kaun si company","rajesh motors kya hai",
+  "yeh kiska number hai","kiski machine","kon sa number","meri nahi hai",
+  "mujhe nahi pehchana","yeh kya number hai","kaunsa model","kaun si model",
+  "mere naam se kyun","mere naam pe","kaun bol raha","kon bol raha",
+  "kis company se","kaun si company","rajesh motors kya hai","kya hai yeh kumpni",
   // Not understanding what is being asked
   "samajh nahi aaya","nahi samjha","nahi samjhi","kya matlab","kya bol rahe",
-  "kya pooch rahe ho","kya pooch rahi ho","kya hai yeh","kon hai",
-  "kaun bol raha","galat call","wrong number","mujhe nahi pata",
-  "samajh nahi","kuch samajh nahi aaya","kya puchh raha hai",
-  "kya bolunga","kya bolun","kya kahen","kya kahu",
-  "thoda explain karo","explain karein","thoda batao",
-  "naya customer hu","pahli baar call kar raha","pehli baar call",
-  "guide karo","samajhao","batao na","procedure",
+  "kya pooch rahe ho","kya pooch rahi ho","kya hai yeh","kon hai","kaunsa",
+  "kaun bol raha","galat call","wrong number","mujhe nahi pata","mujhe pata nahi",
+  "samajh nahi","kuch samajh nahi aaya","kya puchh raha hai","kya puch rahe",
+  "kya bolunga","kya bolun","kya bolun main","kya kahen","kya kahu",
+  "thoda explain karo","explain karein","thoda batao","batao na","explain kare",
+  "naya customer hu","pahli baar call kar raha","pehli baar call","pehli call hai",
+  "guide karo","samajhao","samjha do","batao na","batao bhai",
+  "procedure kya hai","kaise kaam hota hai","ye kya hai",
+  "salaam","namaskar","kaise ho","tum kon ho","phone kiske pas hai",
+  "yeh kaunsa number","main kaun hoon","tum ho kaun","kya koi problem hai",
+  "kya zaroorat hai","kya chahiye aapko","kya bolna hai","kya karna hai",
+  // Rural/dialectal confusion words
+  "aa","ae","ae bhai","sun","suno","suna","dekho","dekh",
+  "haan to","haan par","par kya","kya par","kya bolte ho",
+  "theek hai par","par theek nahi","ache","bas","bas kar","khatam karo",
+  "gadbad hai","ulta pulta bol rahi ho","gumaan kya hai",
+  // Tamil/Marathi/Punjabi accents
+  "what only","super","fine only","good only","ok only",
   // General confusion in Hindi
   "क्या","क्या मतलब","क्या मतलब है","क्या बोल रहे हो",
-  "मतलब क्या","मतलब बताओ","क्या पूछ रहे हो",
+  "मतलब क्या","मतलब बताओ","क्या पूछ रहे हो","क्या पूछ रही हो",
   "क्या चाहिए","क्या करना है","नहीं समझा","नहीं समझी",
-  "समझ नहीं","समझ नहीं आया","कुछ नहीं समझ आया",
-  "थोड़ा समझाओ","समझाओ","बताओ","गलत कॉल",
-  "यह क्या है","मुझे नहीं पता","गाइड करो","समझा दो",
+  "समझ नहीं","समझ नहीं आया","कुछ नहीं समझ आया","कुछ समझ नहीं",
+  "थोड़ा समझाओ","समझाओ","बताओ","गलत कॉल","गलत नंबर है",
+  "यह क्या है","मुझे नहीं पता","गाइड करो","समझा दो","समझा दीजिए",
   "कौन सी मशीन","गलत मशीन","गलत नंबर","यह मेरी नहीं",
-  "किस कंपनी से","कौन bol रहा","किसकी मशीन",
-  // STT artifacts — single confused words
-  "huh","what","pardon","sorry",
+  "किस कंपनी से","कौन bol रहा","किसकी मशीन","मेरी नहीं","ये मेरी नहीं",
+  "आप कौन","आप कौन हो","कौन हो आप","मैं कौन हूँ","मेरा नाम","नाम बताओ",
+  // STT artifacts — single confused words / filler words
+  "huh","what","pardon","sorry","eh","hmm","mm","ah",
+  "aa","aaa","ooo","eee","hhh","ka","ki","kya",
 ];
 
 /* ── CONFIRM — comprehensive affirmatives ── */
@@ -396,6 +412,12 @@ function hasDriverNotAvailableKeywords(text) {
   return hasDriver && hasNot;
 }
 
+/* ── OFF-TOPIC DETECTOR ── */
+export function isOffTopic(text) {
+  if (!text) return false;
+  return OFF_TOPIC_RE.test(normalise(text));
+}
+
 /* ── MACHINE BUSY ── */
 const MACHINE_BUSY_PATTERNS = [
   "machine chal rahi hai","machine kaam kar rahi","site pe chal rahi",
@@ -431,6 +453,28 @@ const CALL_LATER_PATTERNS = [
   "बाद में कॉल करो","बाद में बात करो","बिज़ी हूँ","गाड़ी चला रहा",
   "मीटिंग में हूँ","थोड़ी देर बाद","बाद में","खाली नहीं","वक्त नहीं",
 ];
+
+/* ── OFF-TOPIC ── */
+const OFF_TOPIC_PATTERNS = [
+  // General off-topic indicators
+  "aapka naam","aapka number","aapko kaise pata","kya hai aapka","who are you","kaun ho tum",
+  "aapko kya hak","yeh number kaisa","mera address kya","mere liye kya","mera kya number",
+  "joke sun ao","gaana sun ao","video dikhao","photo bhejo","register karo",
+  "insurance kya hai","policy kya hai","discount kya hai","offer kya hai",
+  "company ke baare mein","company ka history","company kaha pe hai",
+  "kitne machine service ho chuke","kitni call ati hain","rate kya hai",
+  "aap apna number do","mujhe callback karo","mujhe whatsapp karo",
+  "ghar par aao","mera pata likha lo","address likho","mujhe personal call karo",
+  "cricket dekhte ho","movie dekhi hai","shaadi kab hai","paisa de do",
+  "loan de do","discount de do","free service de do","samaan lao",
+  "आपका नाम","आपका नंबर","आप कौन हो","आपको कैसे पता","यह नंबर क्या है",
+  "मेरा एड्रेस क्या","मेरे लिए क्या","कंपनी के बारे में","रेट क्या है",
+  "चुटकुला सुनाओ","गाना सुनाओ","वीडियो दिखाओ","बीमा क्या है",
+  "छूट क्या है","ऑफर क्या है","आपका नंबर दो","मेरे घर आओ",
+  "मुझे कॉल करो","व्हाट्सअप भेजो","शादी कब है","पैसे दो",
+];
+
+const OFF_TOPIC_RE = buildIntentRegex(OFF_TOPIC_PATTERNS);
 
 /* ── RESCHEDULE ── */
 const RESCHEDULE_PATTERNS = [

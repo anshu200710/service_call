@@ -136,11 +136,11 @@ export function resolveDate(rawToken) {
     return makeResult(addDays(today, 1));
 
   /* ── अगले हफ्ते / next week → next Monday ── */
-  if (["अगले हफ्ते","agle hafte","agle week","next week"].includes(t))
+  if (["अगले हफ्ते","agle hafte","agle hafta","agle hafate","अगला हफ्ता","agle week","next week","nxt week","coming week"].includes(t))
     return makeResult(nextWeekday(1));
 
   /* ── अगले महीने / next month → 1st of next month ── */
-  if (["अगले महीने","agle mahine","next month"].includes(t))
+  if (["अगले महीने","agle mahine","agle mahINE","agle mah","agla mahina","अगला महीना","next month","nxt month"].includes(t))
     return makeResult(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1)));
 
   /* ── N दिन बाद / N din baad ── */
