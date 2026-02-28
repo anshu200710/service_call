@@ -1,26 +1,21 @@
 /**
- * voice.service.js  (v8 — Fast Response + Flow Fixes)
- * =====================================================
+ * voice.service.js  (v10 — Slow/Unclear Speech Handling)
+ * =================================================================================
  *
- * 🔴 CRITICAL FIXES (from log analysis):
- *   1. Low-confidence "ठीक है" (conf 0.00) in awaiting_date no longer silently
- *      defaults to tomorrow. NLP now re-asks explicitly (fixed in NLP layer too).
- *   2. REJECT in awaiting_date_confirm now clears preferredDate (null passed to
- *      endSession / NLP) so the rejected date is never saved to DB.
- *   3. "करवाना है" / "karna hai" → CONFIRM correctly (NLP v9 fix).
+ * NEW IN v10:
  *
- * 🟠 HIGH FIXES:
- *   4. GATHER_TIMEOUT reduced 8→6s, SPEECH_TIMEOUT 4→3s for Hindi.
- *      Hindi speakers typically finish in 2-3s — 8s felt like the bot hung.
- *      bargeIn:true lets them interrupt TTS naturally.
- *   5. Status callback (hangup leak) kept from v6.
- *   6. Filler-word CONFIRM guard kept and improved.
+ *  🔴 SLOW / UNCLEAR SPEECH DETECTION:
+ *   1. New `slowSpeechRetries` counter per session — separate from silenceRetries.
+ *   2. New CFG.MAX_SLOW_SPEECH_RETRIES = 3 — customer gets 3 chances before hang up.
+ *   3. New V.slowSpeech lines rotate through 3 natural prompts:
+ *      - "Kripya thoda tez awaaz se boliye"
+ *      - "Awaaz thodi kam aayi, thoda zyada tez boliye"
+ *      - "Shayad awaaz dhimi aa rahi hai, kripya paas aake tez boliye"
+ *   4. On MAX_SLOW_SPEECH_RETRIES exceeded → polite farewell + hangup (not abrupt cut).
+ *   5. Very short utterances (≤2 chars) are also treated as slow speech, not silence.
+ *   6. slowSpeechRetries resets to 0 on any clear, normal speech.
  *
- * 🟡 MEDIUM FIXES:
- *   7. Voice lines: Rajesh now uses "JSB Motors" consistently (was "JCB Motors" in some).
- *   8. persuasionCount increment happens after NLP call (correct — NLP reads old value).
- *   9. rejectionReason captured from awaiting_reason_persisted too.
- *  10. TTL cleanup: stale sessions older than SESSION_TTL_MS auto-ended.
+ * All v9 features retained (Priya persona, confusionStreak, repeatCount, etc.)
  */
 
 import twilio from "twilio";
@@ -30,35 +25,32 @@ import {
   processUserInput,
   INTENT,
   matchBranch,
+  resolveDate,
 } from "../utils/conversational_intelligence.js";
 
 /* =====================================================================
    CONFIGURATION
    ===================================================================== */
 const CFG = {
-  MAX_SILENCE_RETRIES: 3,
-  MAX_TOTAL_TURNS: 15,
-  CONFIDENCE_THRESHOLD: 0.45,   // Slightly lower — Twilio hi-IN STT often gives 0.5 for clear Hindi
-  GATHER_TIMEOUT: 6,             // FIX v8: 6s is enough; 8s made callers think the bot hung
-  SPEECH_TIMEOUT: 3,             // FIX v8: Hindi speakers finish in 2-3s typically
-  TTS_LANGUAGE: "hi-IN",
-  TTS_VOICE: "Polly.Aditi",
-  SESSION_TTL_MS: 30 * 60 * 1000,
+  MAX_SILENCE_RETRIES:     3,
+  MAX_SLOW_SPEECH_RETRIES: 3,   // NEW: max unclear/slow speech retries before hangup
+  MAX_TOTAL_TURNS:         15,
+  CONFIDENCE_THRESHOLD:    0.45,
+  GATHER_TIMEOUT:          6,
+  SPEECH_TIMEOUT:          3,
+  TTS_LANGUAGE:            "hi-IN",
+  TTS_VOICE:               "Polly.Aditi",
+  SESSION_TTL_MS:          30 * 60 * 1000,
+  MAX_REPEAT_COUNT:        3,
+  MAX_CONFUSION_STREAK:    2,
+  MAX_PERSUASION:          2,     // NEW: max persuasion attempts before rejecting
 };
 
 /* =====================================================================
    SESSION STORE
-   NOTE: In-memory. For multi-instance replace with Redis:
-     import { createClient } from 'redis';
-     const redis = createClient({ url: process.env.REDIS_URL });
-     await redis.connect();
-     // set: await redis.setEx(`session:${callSid}`, 1800, JSON.stringify(session));
-     // get: JSON.parse(await redis.get(`session:${callSid}`));
-     // del: await redis.del(`session:${callSid}`);
    ===================================================================== */
 const sessionStore = new Map();
 
-/* Stale session cleanup every 5 min */
 setInterval(() => {
   const now = Date.now();
   for (const [sid, session] of sessionStore.entries()) {
@@ -79,8 +71,7 @@ const log = {
 };
 
 /* =====================================================================
-   TWILIO SIGNATURE VALIDATION MIDDLEWARE
-   Usage: app.use('/voice', voiceService.validateTwilioSignature);
+   TWILIO SIGNATURE VALIDATION
    ===================================================================== */
 export function validateTwilioSignature(req, res, next) {
   const authToken = process.env.TWILIO_AUTH_TOKEN;
@@ -109,14 +100,14 @@ function buildVoiceResponse({ twiml, message, actionUrl, hangup = false }) {
     return;
   }
   const gather = twiml.gather({
-    input: "speech",
-    action: actionUrl,
-    method: "POST",
-    language: CFG.TTS_LANGUAGE,
-    timeout: CFG.GATHER_TIMEOUT,
-    speechTimeout: CFG.SPEECH_TIMEOUT,
+    input:           "speech",
+    action:          actionUrl,
+    method:          "POST",
+    language:        CFG.TTS_LANGUAGE,
+    timeout:         CFG.GATHER_TIMEOUT,
+    speechTimeout:   CFG.SPEECH_TIMEOUT,
     profanityFilter: false,
-    bargeIn: true,
+    bargeIn:         true,
   });
   gather.say(sayOpts, message);
 }
@@ -135,56 +126,65 @@ function errorResponse(res, tag, logMsg, speakMsg) {
 }
 
 /* =====================================================================
+   NLP TIMEOUT GUARD  — prevents NLP hangs
+   ===================================================================== */
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("NLP timeout")), ms)
+    ),
+  ]);
+}
+
+/* =====================================================================
    SESSION FACTORY
    ===================================================================== */
 function createSession(callData, callSid) {
   return {
     callSid,
-    customerName:   callData.customerName   || "sir",
-    customerPhone:  callData.customerPhone   || null,
-    machineModel:   callData.machineModel    || "",
-    machineNumber:  callData.machineNumber   || "",
-    serviceType:    callData.serviceType     || "500 Hour",
-    dueDate:        callData.dueDate         || "",
-    state: "awaiting_initial_decision",
-    preferredDate:     null,
-    resolvedDate:      null,
-    assignedBranchName: null,
-    assignedBranchCode: null,
-    assignedBranchCity: null,
-    assignedBranchAddr: null,
-    rejectionReason:   null,
-    alreadyDoneDetails: null,
-    persuasionCount:   0,
-    lowConfRetries:    0,
-    outcome:           null,
-    silenceRetries:    0,
-    unknownStreak:     0,
-    totalTurns:        0,
-    lastMessage:       "",
-    callStartedAt:     new Date(),
-    turns:             [],
+    customerName:    callData.customerName   || "ji",
+    customerPhone:   callData.customerPhone  || null,
+    machineModel:    callData.machineModel   || "",
+    machineNumber:   callData.machineNumber  || "",
+    serviceType:     callData.serviceType    || "500 Hour",
+    dueDate:         callData.dueDate        || "",
+    state:               "awaiting_initial_decision",
+    preferredDate:       null,
+    resolvedDate:        null,
+    assignedBranchName:  null,
+    assignedBranchCode:  null,
+    assignedBranchCity:  null,
+    assignedBranchAddr:  null,
+    rejectionReason:     null,
+    alreadyDoneDetails:  null,
+    persuasionCount:     0,
+    branchRetries:       0,       // NEW: tracks branch asking retries
+    confusionCount:      0,       // NEW: tracks greeting confusion attempts
+    lowConfRetries:      0,
+    slowSpeechRetries:   0,    // NEW: tracks consecutive slow/unclear speech turns
+    repeatCount:         0,
+    confusionStreak:     0,
+    outcome:             null,
+    silenceRetries:      0,
+    unknownStreak:       0,
+    totalTurns:          0,
+    lastMessage:         "",
+    callStartedAt:       new Date(),
+    ending:              false,   // NEW: hangup protection flag
+    turns:               [],
   };
 }
 
 /* =====================================================================
    OUTCOME RESOLVER
-   Called BEFORE session.state is mutated — uses previousState to detect
-   the already_done path correctly.
    ===================================================================== */
 function resolveOutcome(nextState, intent, session, previousState) {
   if (nextState !== "ended") return "no_response";
-
-  // already_done: customer was in awaiting_service_details and gave details
   if (previousState === "awaiting_service_details") return "already_done";
-
-  // confirmed: we have at minimum a preferredDate
   if (session.preferredDate && session.assignedBranchCode) return "confirmed";
   if (session.preferredDate && !session.assignedBranchCode) return "confirmed";
-
-  // explicit reject with no actionable data
   if (intent === INTENT.REJECT) return "rejected";
-
   return "no_response";
 }
 
@@ -194,21 +194,15 @@ function resolveOutcome(nextState, intent, session, previousState) {
 async function saveCallOutcome(session, outcome) {
   try {
     const resolvedDisplay = session.resolvedDate?.display || session.preferredDate || null;
-    const resolvedISO     = session.resolvedDate?.iso || null;
+    const resolvedISO     = session.resolvedDate?.iso     || null;
 
-    if (outcome === "confirmed" && resolvedDisplay && !resolvedISO) {
-      log.warn("db", "Storing raw date token — resolveDate may have failed", {
-        callSid: session.callSid, token: resolvedDisplay,
-      });
-    }
-
-    const doc = await ServiceBooking.create({
-      callSid:      session.callSid,
-      customerName: session.customerName,
-      customerPhone:session.customerPhone,
-      machineModel: session.machineModel,
-      machineNumber:session.machineNumber,
-      serviceType:  session.serviceType,
+    await ServiceBooking.create({
+      callSid:       session.callSid,
+      customerName:  session.customerName,
+      customerPhone: session.customerPhone,
+      machineModel:  session.machineModel,
+      machineNumber: session.machineNumber,
+      serviceType:   session.serviceType,
       dueDateOriginal: session.dueDate,
       outcome,
       confirmedServiceDate:    outcome === "confirmed" ? resolvedDisplay || "[date unresolved]" : null,
@@ -216,8 +210,8 @@ async function saveCallOutcome(session, outcome) {
       assignedBranchName: session.assignedBranchName || null,
       assignedBranchCode: session.assignedBranchCode || null,
       assignedBranchCity: session.assignedBranchCity || null,
-      rejectionReason:    outcome === "rejected"    ? session.rejectionReason    : null,
-      alreadyDoneDetails: outcome === "already_done"? session.alreadyDoneDetails : null,
+      rejectionReason:    outcome === "rejected"     ? session.rejectionReason    : null,
+      alreadyDoneDetails: outcome === "already_done" ? session.alreadyDoneDetails : null,
       totalTurns:    session.totalTurns,
       callStartedAt: session.callStartedAt,
       callEndedAt:   new Date(),
@@ -225,8 +219,9 @@ async function saveCallOutcome(session, outcome) {
     });
 
     log.info("db", `Saved — outcome: ${outcome} | date: ${resolvedDisplay || "N/A"}`, {
-      docId: doc._id.toString(), callSid: session.callSid,
-      branch: session.assignedBranchCode || "N/A", iso: resolvedISO,
+      callSid: session.callSid,
+      branch:  session.assignedBranchCode || "N/A",
+      iso:     resolvedISO,
     });
   } catch (err) {
     log.error("db", `Save failed: ${err.message}`, { callSid: session.callSid });
@@ -238,9 +233,16 @@ async function saveCallOutcome(session, outcome) {
    ===================================================================== */
 async function endSession(callSid, reason, outcome = "no_response") {
   const session = sessionStore.get(callSid);
-  sessionStore.delete(callSid);
+  if (session) {
+    session.ending = true;
+  }
   log.info("session", `Ended — ${reason} | outcome: ${outcome}`, { callSid });
   if (session) await saveCallOutcome(session, outcome);
+  
+  // Delayed deletion to prevent double-webhook issue
+  setTimeout(() => {
+    sessionStore.delete(callSid);
+  }, 5000);
 }
 
 /* =====================================================================
@@ -248,18 +250,17 @@ async function endSession(callSid, reason, outcome = "no_response") {
    ===================================================================== */
 function appendTurn(session, { customerSaid, confidence, intent, systemReply }) {
   session.turns.push({
-    turnNumber:  session.totalTurns,
-    state:       session.state,
-    customerSaid:customerSaid || "",
-    confidence:  confidence ?? null,
-    intent:      intent || null,
+    turnNumber:   session.totalTurns,
+    state:        session.state,
+    customerSaid: customerSaid || "",
+    confidence:   confidence ?? null,
+    intent:       intent || null,
     systemReply,
   });
 }
 
 /* =====================================================================
    FILLER-WORD CONFIRM GUARD
-   Returns true when CONFIRM is a genuine booking intent vs a filler ack.
    ===================================================================== */
 const STRONG_CONFIRM_TOKENS = [
   "book karo","book kar","confirm karo","confirm kar do","karwa do","karvao",
@@ -274,126 +275,268 @@ const FILLER_ONLY_TOKENS = [
   "अच्छा","ठीक है","हाँ","हां","ओके",
 ];
 
+/* =====================================================================
+   MEANINGFUL SHORT WORDS GUARD — for slow speech detection
+   ===================================================================== */
+const MEANINGFUL_SHORT_WORDS = [
+  "haan","haan ji","ji","ok","okay",
+  "theek","theek hai","thik hai",
+  "kal","parso","haanji","hmm",
+];
+
+/* =====================================================================
+   GREETING CONFUSION PATTERNS — detects confused responses at greeting
+   ===================================================================== */
+const GREETING_CONFUSION_PATTERNS = [
+  /कौन\s+बोल\s+रहे/iu,
+  /आप\s+कौन/iu,
+  /किस\s+लिए\s+कॉल/iu,
+  /क्या\s+कहा/iu,
+  /फिर\s+से\s+बोल/iu,
+  /समझ\s+नहीं\s+आया/iu,
+  /कौन\s+है/iu,
+  /किस\s+चीज/iu,
+];
+
+function isMeaningfulShort(text) {
+  const lower = text.toLowerCase().trim();
+  return MEANINGFUL_SHORT_WORDS.includes(lower);
+}
+
+/* =====================================================================
+   UNCLEAR SPEECH DETECTOR — blocks unclear/noisy input at greeting
+   ===================================================================== */
+function isUnclearSpeech({ text, confidence }) {
+  if (!text) return true;
+  const wordCount = text.trim().split(/\s+/).length;
+  return (
+    confidence < 0.3 ||
+    wordCount <= 1 ||
+    text.trim().length <= 3
+  );
+}
+
+/* =====================================================================
+   GREETING CONFUSION DETECTOR
+   ===================================================================== */
+function detectGreetingConfusion(text) {
+  if (!text) return false;
+  for (const pattern of GREETING_CONFUSION_PATTERNS) {
+    if (pattern.test(text)) return true;
+  }
+  return false;
+}
+
 function isGenuineConfirm(userText, state) {
   const lower = userText.toLowerCase().trim();
-
-  // These states always expect CONFIRM to be meaningful
   if (["awaiting_date_confirm","awaiting_initial_decision"].includes(state)) return true;
-
-  // Strong booking keyword present → genuine
   if (STRONG_CONFIRM_TOKENS.some(t => lower.includes(t))) return true;
-
-  // Only a filler word in a reason/persuasion state → ambiguous, not genuine
   const isOnlyFiller = FILLER_ONLY_TOKENS.some(
     t => lower === t || lower === t + " ji" || lower === "ji " + t
   );
   if (isOnlyFiller && ["awaiting_reason","awaiting_reason_persisted"].includes(state)) {
     return false;
   }
-
   return true;
 }
 
 /* =====================================================================
-   VOICE LINES (v8 — Natural Hinglish Agent, Rajesh)
-   Changes from v7:
-   • Greeting: "JSB Motors" not "JCB Motors" (was a bug)
-   • All lines use natural conversational Hindi, not formal announcer tone
-   • confirmBooking: warm + celebratory
-   • silenceFallback: sounds like a real person checking in
-   • noResponseEnd: reassuring, not robotic
+   REPEAT RESPONSE ROTATOR
+   ===================================================================== */
+const REPEAT_INTROS = [
+  "Zaroor, phir se bata rahi hoon —",
+  "Bilkul ji, dobara keh rahi hoon —",
+  "Haan ji, suniye —",
+  "Koi baat nahi, phir se —",
+  "Zaroor, ek baar aur —",
+];
+
+function getRepeatResponse(session) {
+  const idx     = session.repeatCount % REPEAT_INTROS.length;
+  const intro   = REPEAT_INTROS[idx];
+  const lastMsg = session.lastMessage || "";
+  return lastMsg
+    ? `${intro} ${lastMsg}`
+    : V.repeatFallback(session.customerName);
+}
+
+/* =====================================================================
+   CONFUSION RESPONSE BUILDER
+   ===================================================================== */
+function getConfusionResponse(session) {
+  const name    = session.customerName || "ji";
+  const number  = session.machineNumber || "aapki machine";
+  const svcType = session.serviceType   || "scheduled service";
+
+  if (session.confusionStreak >= CFG.MAX_CONFUSION_STREAK) {
+    return (
+      `Namaskar phir se ${name} ji. Main Priya hoon, Rajesh Motors JCB Service se. ` +
+      `Aapke registered number par machine number ${number} ki ${svcType} ke baare mein ` +
+      `call kar rahi hoon. Kya yeh aapki machine hai? Haan ya nahi boliye.`
+    );
+  }
+
+  return (
+    `Maafi chahti hoon ${name} ji, shayad main spasht nahi bol payi. ` +
+    `Main Priya hoon, Rajesh Motors JCB Service se — machine number ${number} ki ` +
+    `${svcType} service book karwana chahti thi. Kya aap interested hain?`
+  );
+}
+
+/* =====================================================================
+   SLOW SPEECH RESPONSE ROTATOR   ← NEW
+   Rotates through 3 polite prompts asking customer to speak louder/clearer.
+   On final attempt, gives a warm farewell before hanging up.
+   ===================================================================== */
+const SLOW_SPEECH_PROMPTS = [
+  (name) => `${name} ji, kripya thoda tez awaaz se boliye — awaaz dhimi aa rahi hai.`,
+  (name) => `${name} ji, awaaz thodi kam aayi. Kripya thoda zyada tez aur spasht boliye.`,
+  (name) => `${name} ji, shayad awaaz ki samasya aa rahi hai. Kripya paas aake thoda tez boliye.`,
+];
+
+function getSlowSpeechPrompt(session) {
+  const idx = Math.min(session.slowSpeechRetries - 1, SLOW_SPEECH_PROMPTS.length - 1);
+  return SLOW_SPEECH_PROMPTS[idx](session.customerName || "ji");
+}
+
+function getSlowSpeechFarewell(name) {
+  return (
+    `${name} ji, awaaz baar baar saaf nahi aayi. ` +
+    `Hum thodi der baad dobara sampark karenge. Dhanyavaad!`
+  );
+}
+
+/* =====================================================================
+   VOICE LINES (Priya — Formal, Polite, Feminine)
    ===================================================================== */
 const V = {
-  // Opening
-  greeting: (name, model, number, serviceType) =>
-    `नमस्ते ${name} जी! मैं राजेश JCB Motors से बोल रहा हूँ। आपकी मशीन नंबर ${number} की ${serviceType} सर्विस का समय आ गया है। क्या इस हफ्ते बुक कर दूँ?`,
 
-  // Date collection
+  greeting: (name, model, number, serviceType) =>
+    `Namaskar ${name} ji! ` +
+    `Main Priya bol rahi hoon, Rajesh Motors JCB Service se. ` +
+    `Aapki machine number ${number}, model ${model}, ki ${serviceType} service ka samay aa gaya hai. ` +
+    `Kya main is hafte ke liye booking kar sakti hoon?`,
+
   askDate: (name) =>
-    `${name} जी, कौन सा दिन ठीक रहेगा? कल, परसों, सोमवार — या कोई भी तारीख बताइए।`,
+    `${name} ji, kripya bataiye — kaunsa din aapke liye suvidhajanak rahega? ` +
+    `Kal, parso, somwar, ya koi bhi tarikh boliye.`,
 
   confirmDate: (name, displayDate) =>
-    `ठीक है ${name} जी, ${displayDate} को बुक करता हूँ। kya ye thik hai haan boliye`,
+    `Bilkul ${name} ji. ${displayDate} ko booking kar rahi hoon — kya yeh theek rahega? Haan ya nahi boliye.`,
 
-  // Branch collection
   askBranch: (name) =>
-    `${name} जी, मशीन किस शहर में है? जयपुर, कोटा, अजमेर, अलवर या उदयपुर?`,
+    `${name} ji, aapki machine abhi kis shehar mein hai? ` +
+    `Jaipur, Kota, Ajmer, Alwar, Sikar ya Udaipur — kripya shehar ka naam bataiye.`,
 
   askBranchAgain: (name) =>
-    `${name} जी, शहर का नाम ज़रा साफ़ बोलिए — जयपुर, कोटा, अजमेर, उदयपुर या अलवर?`,
+    `${name} ji, shehar ka naam thoda spasht bataiye please — ` +
+    `Jaipur, Kota, Ajmer, Udaipur, ya Alwar mein se kaunsa?`,
 
-  // Booking confirmed
   confirmBooking: (name, branchName, branchCity, displayDate) =>
-    `बहुत बढ़िया ${name} जी! सर्विस बुक हो गई — ${displayDate} को ${branchName}, ${branchCity} में। हमारे इंजीनियर आपसे संपर्क करेंगे। बहुत धन्यवाद!`,
+    `Bahut achchi baat hai ${name} ji! Aapki service book ho gayi — ` +
+    `${displayDate} ko ${branchName}, ${branchCity} mein. ` +
+    `Hamare service engineer aapse jald smpark karenge. Dhanyavaad!`,
 
-  // Objections
   askReason: (name) =>
-    `कोई बात नहीं ${name} जी। बताइए क्या दिक्कत है? शायद हम कुछ मदद कर सकें।`,
+    `Samajh gayi ${name} ji. Kripya bataiye kya karan hai — ` +
+    `main dekhti hoon ki kya koi sahayata ho sakti hai.`,
 
-  // Already done path
   askAlreadyDoneDetails: (name) =>
-    `अरे वाह, बहुत अच्छा किया ${name} जी! कब करवाई थी, कहाँ से, और कौन सी सर्विस? थोड़ा बता दीजिए।`,
+    `Achha, bahut achchi baat hai ${name} ji! Kripya bataiye — ` +
+    `kab karwaai thi, kahan se, aur kaunsi service thi?`,
 
   alreadyDoneSaved: (name) =>
-    `शुक्रिया ${name} जी! रिकॉर्ड अपडेट हो गया। अगली सर्विस का रिमाइंडर पहले से आ जाएगा। धन्यवाद!`,
+    `Shukriya ${name} ji! Aapka record update kar diya gaya hai. ` +
+    `Agli service ka reminder samay se pahle aayega. Dhanyavaad!`,
 
-  // Objection handlers
   objectionDriverNotAvailable: (name) =>
-    `समझ गया ${name} जी। ड्राइवर के आने पर एक दिन बता दीजिए — हम तब के लिए फिक्स कर देंगे। कब तक हो सकता है?`,
+    `Bilkul samajh gayi ${name} ji. ` +
+    `Driver ke uplabdh hone par ek suvidhajanaka din bata deejiye — main usi ke liye fix kar dungi.`,
 
   objectionMachineBusy: (name) =>
-    `समझ गया ${name} जी, मशीन साइट पर है। जब थोड़ी देर के लिए फ्री हो सके — कोई एक दिन बताइए।`,
+    `Samajh gayi ${name} ji, machine abhi kaam par hai. ` +
+    `Jab thodi der ke liye free ho sake, tab ka ek din bata deejiye.`,
 
   objectionWorkingFine: (name) =>
-    `अच्छी बात है ${name} जी कि मशीन ठीक है। लेकिन समय पर सर्विस से अचानक खराबी नहीं आती। कब करवाएँ?`,
+    `Yeh sunkar achcha laga ${name} ji ki machine sahi chal rahi hai. ` +
+    `Samay par service se future mein kharabi ka khatra bhi kam ho jata hai. Kab karein?`,
 
   objectionMoneyIssue: (name) =>
-    `कोई फ़िक्र नहीं ${name} जी, पेमेंट बाद में हो जाएगी। बस एक तारीख बता दीजिए।`,
+    `Koi chinta nahi ${name} ji. Pehle ek tarikh tay kar lein — ` +
+    `payment baad mein bhi ho sakti hai.`,
 
   objectionCallLater: (name) =>
-    `ठीक है ${name} जी। कोई एक दिन बता दीजिए — मैं नोट कर लेता हूँ। कौन सा दिन?`,
+    `Bilkul ${name} ji. Koi ek suvidhajanaka din bata deejiye — ` +
+    `main record mein note kar leti hoon.`,
 
-  // Final persuasion
   persuasionFinal: (name) =>
-    `${name} जी, सर्विस छोड़ने पर बाद में ज़्यादा खर्चा पड़ता है। आज एक तारीख तय कर लीजिए — बाकी सब हम सँभाल लेंगे। हाँ?`,
+    `${name} ji, service aage karne se baad mein adhik kharcha pad sakta hai. ` +
+    `Kripya ek tarikh bataiye — baaki sab main sambhal lungi.`,
 
-  // End states
   rejected: (name) =>
-    `ठीक है ${name} जी। जब भी ज़रूरत हो, JSB Motors को कॉल करिएगा — हम हमेशा तैयार हैं। धन्यवाद!`,
+    `Theek hai ${name} ji. Jab bhi zaroorat ho, Rajesh Motors ko call kijiye — ` +
+    `hum hamesha taiyaar hain. Dhanyavaad!`,
 
   noResponseEnd: (name) =>
-    `${name} जी, थोड़ी देर में हम दोबारा कॉल करेंगे। धन्यवाद!`,
+    `${name} ji, koi awaaz nahi aayi. Main thodi der baad dobara call karungi. Dhanyavaad!`,
 
-  // Silence fallbacks (per-state)
+  repeatFallback: (name) =>
+    `Ji zaroor. Main Priya hoon, Rajesh Motors JCB Service se — ` +
+    `aapki machine ki service booking ke baare mein baat kar rahi thi.`,
+
+  confusionClarify: (name, machineNumber, serviceType) =>
+    `${name} ji, ek baar spasht kar doon — main Priya hoon, Rajesh Motors se. ` +
+    `Machine number ${machineNumber} ki ${serviceType} ke liye call aa rahi hai. ` +
+    `Kya aap service book karna chahte hain?`,
+
+  confusionFull: (name, machineNumber, serviceType) =>
+    `Namaskar ${name} ji. Main Priya hoon, Rajesh Motors JCB Service se. ` +
+    `Aapke registered number par machine number ${machineNumber} ki ${serviceType} ` +
+    `ke baare mein call ki thi. Kya yeh aapki machine hai?`,
+
+  offerAgent: (name) =>
+    `${name} ji, lagta hai awaaz mein kuch takleef aa rahi hai. ` +
+    `Kya aap chaahenge ki main aapko hamare senior agent se connect kar doon?`,
+
   silenceFallback: {
     awaiting_initial_decision: (name) =>
-      `${name} जी, सुन रहे हैं आप? सर्विस बुकिंग के बारे में पूछ रहा था — क्या इस हफ्ते करवा लें?`,
+      `${name} ji, kya aap mujhe sun pa rahe hain? Service booking ke baare mein baat kar rahi thi.`,
     awaiting_reason: (name) =>
-      `${name} जी, मैं सुन रहा हूँ — कोई परेशानी हो तो बताइए।`,
+      `${name} ji, main sun rahi hoon — koi baat ho to bataiye.`,
     awaiting_reason_persisted: (name) =>
-      `${name} जी, कोई एक दिन बता दीजिए — हम आपके हिसाब से arrange कर देंगे।`,
+      `${name} ji, koi bhi suvidhajanaka din bata deejiye — main arrange kar lungi.`,
     awaiting_date: (name) =>
-      `${name} जी, कौन सा दिन ठीक लगेगा? कल, परसों, या इस हफ्ते कोई भी दिन।`,
+      `${name} ji, kaunsa din theek rahega? Kal, parso, ya is hafte koi bhi din.`,
     awaiting_date_confirm: (name) =>
-      `${name} जी, यह तारीख ठीक है ना? हाँ या नहीं बोल दीजिए।`,
+      `${name} ji, yeh tarikh theek hai? Kripya haan ya nahi boliye.`,
     awaiting_branch: (name) =>
-      `${name} जी, मशीन का शहर बताइए — जयपुर, कोटा, अजमेर या उदयपुर?`,
+      `${name} ji, machine ka shehar bataiye — Jaipur, Kota, Ajmer ya Udaipur?`,
     awaiting_service_details: (name) =>
-      `${name} जी, कब, कहाँ से और कौन सी सर्विस करवाई थी?`,
+      `${name} ji, kab, kahan se aur kaunsi service karwaai thi?`,
   },
 
-  // Utility
-  repeat: (name, lastMsg)  => `${name} जी, दोबारा बताता हूँ — ${lastMsg}`,
-  repeatFallback: (name)   => `जी, मैं राजेश, JSB Motors से — आपकी मशीन की सर्विस बुकिंग के लिए कॉल किया था।`,
-  confusionClarify: (name) => `${name} जी, मैं राजेश JSB Motors से बोल रहा हूँ। आपकी मशीन की सर्विस का समय आया है — क्या बुक करें?`,
-  lowConfidence: (name)    => `${name} जी, आवाज़ साफ़ नहीं आई। क्या थोड़ा ज़ोर से बोल सकते हैं?`,
-  politeAskAgain: (name)   => `${name} जी, समझा नहीं — हाँ या नहीं बोल दीजिए।`,
-  technicalError: (name)   => `${name} जी, थोड़ी तकनीकी समस्या आ गई। थोड़ी देर में दोबारा कॉल करते हैं। धन्यवाद!`,
+  // Updated: now explicitly says "tez awaaz se boliye" for low confidence
+  lowConfidence: (name) =>
+    `${name} ji, awaaz thodi saaf nahi aayi. Kripya thoda tez awaaz se boliye.`,
 
-  // System error lines
-  noCallData: ()    => `नमस्ते जी! डेटा लोड करने में समस्या है। थोड़ी देर बाद कॉल करें। शुक्रिया!`,
-  noSession: ()     => `नमस्ते जी! सेशन समाप्त हो गया। कृपया दोबारा कॉल करें। शुक्रिया!`,
-  missingCallSid: ()=> `तकनीकी समस्या है। थोड़ी देर बाद संपर्क करें। शुक्रिया!`,
+  politeAskAgain: (name) =>
+    `${name} ji, samajh nahi aaya. Kripya haan ya nahi boliye.`,
+
+  technicalError: (name) =>
+    `${name} ji, thodi technical dikkat aa gayi. Hum jald dobara sampark karenge. Kshama kijiye!`,
+
+  noCallData: ()     => `Namaskar ji! Data load karne mein thodi dikkat aa gayi. Kripya thodi der baad call karein. Shukriya!`,
+  noSession: ()      => `Namaskar ji! Session samaapt ho gaya. Kripya dobara call karein. Shukriya!`,
+  missingCallSid: () => `Technical samasya aa gayi. Thodi der baad sampark karein. Shukriya!`,
+
+  shortGreeting: (name) =>
+    `${name} ji, main Priya hoon, Rajesh Motors se. ` +
+    `Aapki JCB machine ki service ke liye call kiya hai. ` +
+    `Kya aap abhi baat kar sakte hain?`,
+
+  greetingConfusionLimit: (name) =>
+    `${name} ji, lagta hai abhi baat karna suvidhajanak nahi hai. ` +
+    `Main baad mein call karungi. Dhanyavaad!`,
 };
 
 /* =====================================================================
@@ -411,7 +554,7 @@ async function handleInitialCall(req, res) {
   const session = createSession(callData, callSid);
   const { customerName, machineModel, machineNumber, serviceType } = session;
 
-  const greeting = V.greeting(customerName, machineModel, machineNumber, serviceType);
+  const greeting     = V.greeting(customerName, machineModel, machineNumber, serviceType);
   session.lastMessage = greeting;
   sessionStore.set(callSid, session);
 
@@ -423,14 +566,12 @@ async function handleInitialCall(req, res) {
 
 /* =====================================================================
    handleStatusCallback
-   Twilio fires this when customer hangs up mid-call.
-   Wire to: process.env.PUBLIC_URL + '/voice/status'
    ===================================================================== */
 async function handleStatusCallback(req, res) {
   const callSid    = req.body?.CallSid;
   const callStatus = req.body?.CallStatus;
 
-  res.sendStatus(204); // Acknowledge immediately
+  res.sendStatus(204);
 
   if (!callSid) return;
 
@@ -442,7 +583,7 @@ async function handleStatusCallback(req, res) {
 }
 
 /* =====================================================================
-   handleUserInput
+   handleUserInput  — Main conversation handler
    ===================================================================== */
 async function handleUserInput(req, res) {
   const twiml     = new twilio.twiml.VoiceResponse();
@@ -457,11 +598,17 @@ async function handleUserInput(req, res) {
   let session = sessionStore.get(callSid);
   if (!session) return errorResponse(res, "input", `No session for ${callSid}`, V.noSession());
 
+  /* ── Hangup protection: prevent post-hangup ghost requests ── */
+  if (session.ending) {
+    log.warn("input", "Session already ending — ignoring ghost request", { callSid });
+    return sendTwiML(res, new twilio.twiml.VoiceResponse());
+  }
+
   session.totalTurns += 1;
   const name = session.customerName;
 
   log.info("input", `Turn ${session.totalTurns} | state: ${session.state}`, {
-    callSid, speech: rawSpeech.substring(0, 80), confidence: confidence.toFixed(2),
+    callSid, speech: rawSpeech.substring(0, 80), confidence: confidence.toFixed(2), confusionCount: session.confusionCount,
   });
 
   /* ── Turn cap ── */
@@ -497,69 +644,179 @@ async function handleUserInput(req, res) {
 
   session.silenceRetries = 0;
 
-  /* ── Low confidence ── */
-  // FIX v8: Twilio hi-IN STT returns 0.00 for clear Hindi regularly.
-  // Only ask to repeat ONCE for very short (≤3 char) speech. Otherwise force NLP.
-  if (confidence < CFG.CONFIDENCE_THRESHOLD) {
-    session.lowConfRetries = (session.lowConfRetries || 0) + 1;
-    log.warn("input", `Low confidence (${confidence.toFixed(2)}) retry #${session.lowConfRetries}`, { callSid });
-
-    if (session.lowConfRetries === 1 && rawSpeech.length <= 3) {
-      const repeatMsg = V.lowConfidence(name);
-      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "low_confidence", systemReply: repeatMsg });
-      session.lastMessage = repeatMsg;
+  /* ══════════════════════════════════════════════════════════════════
+     STEP 1: Check for unclear speech at GREETING
+     Block noisy/unclear input from being processed as intent
+   ══════════════════════════════════════════════════════════════════ */
+  if (session.state === "awaiting_initial_decision") {
+    const unclear = isUnclearSpeech({ text: rawSpeech, confidence });
+    
+    if (unclear) {
+      session.confusionCount = (session.confusionCount || 0) + 1;
+      log.warn("input", `Greeting unclear speech #${session.confusionCount} | conf=${confidence.toFixed(2)}`, { callSid });
+      
+      if (session.confusionCount >= 3) {
+        const farewell = V.greetingConfusionLimit(name);
+        appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "greeting_confusion_max", systemReply: farewell });
+        session.ending = true;
+        sessionStore.set(callSid, session);
+        setTimeout(() => sessionStore.delete(callSid), 5000);
+        await endSession(callSid, "greeting_confusion_max", "no_response");
+        buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
+        return sendTwiML(res, twiml);
+      }
+      
+      const shortGreet = V.shortGreeting(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "unclear_speech", systemReply: shortGreet });
+      session.lastMessage = shortGreet;
       sessionStore.set(callSid, session);
-      buildVoiceResponse({ twiml, message: repeatMsg, actionUrl: action });
+      buildVoiceResponse({ twiml, message: shortGreet, actionUrl: action });
       return sendTwiML(res, twiml);
     }
-    log.info("input", `Forcing NLP on low-conf speech (retry #${session.lowConfRetries})`, { callSid });
-  } else {
-    session.lowConfRetries = 0;
+    session.confusionCount = 0; // Reset on clear speech
   }
 
-  /* ── NLP ── */
+  /* ══════════════════════════════════════════════════════════════════
+     SLOW / UNCLEAR SPEECH DETECTION  ← MAIN BLOCK
+     Triggered when:
+       (a) confidence below threshold, AND
+       (b) NLP also failed (intent is UNKNOWN), AND
+       (c) it's not a meaningful short word
+     Customer gets CFG.MAX_SLOW_SPEECH_RETRIES chances with escalating
+     prompts asking them to speak louder/clearer. After max retries,
+     a polite farewell is played and the call ends gracefully.
+   ══════════════════════════════════════════════════════════════════ */
+  const isVeryShortSpeech = rawSpeech.length <= 2;
+  const isLowConfidence   = confidence < CFG.CONFIDENCE_THRESHOLD;
+
+  /* Detect slow/unclear speech: low confidence + NLP also failed + not meaningful */
   let nlpResult;
   try {
-    nlpResult = processUserInput(rawSpeech, {
-      ...session,
-      retries: session.silenceRetries,
-      unknownStreak: session.unknownStreak,
-      persuasionCount: session.persuasionCount,
-    });
+    nlpResult = await withTimeout(
+      Promise.resolve(processUserInput(rawSpeech, {
+        ...session,
+        retries:         session.silenceRetries,
+        unknownStreak:   session.unknownStreak,
+        persuasionCount: session.persuasionCount,
+      })),
+      3000
+    );
   } catch (err) {
-    log.error("input", `NLP error: ${err.message}`, { callSid });
+    log.error("input", `NLP timeout or error: ${err.message}`, { callSid });
     const errMsg = V.technicalError(name);
     appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "nlp_error", systemReply: errMsg });
+    session.ending = true;
     sessionStore.set(callSid, session);
-    await endSession(callSid, "nlp_error", "no_response");
+    setTimeout(() => sessionStore.delete(callSid), 5000);
     buildVoiceResponse({ twiml, message: errMsg, actionUrl: action, hangup: true });
     return sendTwiML(res, twiml);
   }
 
+  const intent = nlpResult.intent || "unknown";
+  
+  /* ══════════════════════════════════════════════════════════════════
+     STEP 2: Check for greeting confusion intent at GREETING
+   ══════════════════════════════════════════════════════════════════ */
+  if (session.state === "awaiting_initial_decision" && detectGreetingConfusion(rawSpeech)) {
+    session.confusionCount = (session.confusionCount || 0) + 1;
+    log.warn("input", `Greeting confusion intent #${session.confusionCount}`, { callSid });
+    
+    if (session.confusionCount >= 3) {
+      const farewell = V.greetingConfusionLimit(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "greeting_confusion", systemReply: farewell });
+      session.ending = true;
+      sessionStore.set(callSid, session);
+      setTimeout(() => sessionStore.delete(callSid), 5000);
+      await endSession(callSid, "greeting_confusion_repeat", "no_response");
+      buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
+      return sendTwiML(res, twiml);
+    }
+    
+    const shortGreet = V.shortGreeting(name);
+    appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "greeting_confusion", systemReply: shortGreet });
+    session.lastMessage = shortGreet;
+    sessionStore.set(callSid, session);
+    buildVoiceResponse({ twiml, message: shortGreet, actionUrl: action });
+    return sendTwiML(res, twiml);
+  }
+  
+  const shouldTriggerSlowSpeech =
+    (confidence < 0.3 && intent === INTENT.UNKNOWN) &&
+    !isMeaningfulShort(rawSpeech);
+
+  if (shouldTriggerSlowSpeech || isVeryShortSpeech) {
+    session.slowSpeechRetries = (session.slowSpeechRetries || 0) + 1;
+    session.lowConfRetries    = session.slowSpeechRetries; // keep legacy counter in sync
+
+    log.warn("input",
+      `Slow/unclear speech #${session.slowSpeechRetries} | conf=${confidence.toFixed(2)} | len=${rawSpeech.length}`,
+      { callSid }
+    );
+
+    if (session.slowSpeechRetries >= CFG.MAX_SLOW_SPEECH_RETRIES) {
+      // Max retries reached — polite farewell, do NOT abruptly cut
+      const farewell = getSlowSpeechFarewell(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "slow_speech_max", systemReply: farewell });
+      sessionStore.set(callSid, session);
+      await endSession(callSid, "slow_speech_max", "no_response");
+      buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
+      return sendTwiML(res, twiml);
+    }
+
+    // Still within retries — prompt to speak louder/clearer
+    const slowMsg = getSlowSpeechPrompt(session);
+    appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "slow_speech", systemReply: slowMsg });
+    session.lastMessage = slowMsg;
+    sessionStore.set(callSid, session);
+    buildVoiceResponse({ twiml, message: slowMsg, actionUrl: action });
+    return sendTwiML(res, twiml);
+  }
+
+  // Clear speech received — reset both counters
+  session.slowSpeechRetries = 0;
+  session.lowConfRetries    = 0;
+
   const {
     replyText, nextState, endCall,
     preferredDate, resolvedDate, extractedBranch,
-    intent = "unknown",
   } = nlpResult;
 
   /* ── REPEAT ── */
   if (intent === INTENT.REPEAT) {
-    const replay = session.lastMessage ? V.repeat(name, session.lastMessage) : V.repeatFallback(name);
-    appendTurn(session, { customerSaid: rawSpeech, confidence, intent, systemReply: replay });
+    session.repeatCount = (session.repeatCount || 0) + 1;
+    log.info("input", `Repeat request #${session.repeatCount}`, { callSid });
+
+    let repeatMsg;
+    if (session.repeatCount > CFG.MAX_REPEAT_COUNT) {
+      repeatMsg = V.offerAgent(name);
+      log.warn("input", `Repeat loop detected — offering agent`, { callSid });
+    } else {
+      repeatMsg = getRepeatResponse(session);
+    }
+
+    appendTurn(session, { customerSaid: rawSpeech, confidence, intent, systemReply: repeatMsg });
     sessionStore.set(callSid, session);
-    buildVoiceResponse({ twiml, message: replay, actionUrl: action });
+    buildVoiceResponse({ twiml, message: repeatMsg, actionUrl: action });
     return sendTwiML(res, twiml);
   }
 
-  /* ── UNCLEAR / CONFUSION ── */
+  session.repeatCount = 0;
+
+  /* ── CONFUSION ── */
   if (intent === INTENT.UNCLEAR || intent === INTENT.CONFUSION) {
-    const clarify = replyText || V.confusionClarify(name);
-    appendTurn(session, { customerSaid: rawSpeech, confidence, intent, systemReply: clarify });
-    session.lastMessage = clarify;
+    session.confusionStreak = (session.confusionStreak || 0) + 1;
+    log.info("input", `Confusion streak #${session.confusionStreak}`, { callSid });
+
+    const confusionMsg = getConfusionResponse(session);
+
+    appendTurn(session, { customerSaid: rawSpeech, confidence, intent, systemReply: confusionMsg });
+    session.lastMessage = confusionMsg;
     sessionStore.set(callSid, session);
-    buildVoiceResponse({ twiml, message: clarify, actionUrl: action });
+    buildVoiceResponse({ twiml, message: confusionMsg, actionUrl: action });
     return sendTwiML(res, twiml);
   }
+
+  session.confusionStreak = 0;
 
   /* ── Filler-word CONFIRM guard ── */
   if (intent === INTENT.CONFIRM && !isGenuineConfirm(rawSpeech, session.state)) {
@@ -573,7 +830,10 @@ async function handleUserInput(req, res) {
   }
 
   /* ── Capture rejection reason ── */
-  if ((session.state === "awaiting_reason" || session.state === "awaiting_reason_persisted") && rawSpeech) {
+  if (
+    (session.state === "awaiting_reason" || session.state === "awaiting_reason_persisted") &&
+    rawSpeech
+  ) {
     session.rejectionReason = rawSpeech;
   }
 
@@ -583,14 +843,8 @@ async function handleUserInput(req, res) {
   }
 
   /* ── Persist date ── */
-  // FIX v8: Only persist date if NLP returned a non-null preferredDate.
-  // If NLP cleared it (REJECT in awaiting_date_confirm), preferredDate = null → clear session too.
-  if (preferredDate !== undefined) {
-    session.preferredDate = preferredDate;  // null clears it, string sets it
-  }
-  if (resolvedDate !== undefined) {
-    session.resolvedDate = resolvedDate;
-  }
+  if (preferredDate !== undefined) session.preferredDate = preferredDate;
+  if (resolvedDate  !== undefined) session.resolvedDate  = resolvedDate;
 
   /* ── Persist branch ── */
   if (extractedBranch) {
@@ -598,35 +852,59 @@ async function handleUserInput(req, res) {
     session.assignedBranchCode = extractedBranch.code;
     session.assignedBranchCity = extractedBranch.city;
     session.assignedBranchAddr = extractedBranch.address || null;
+    session.branchRetries = 0;  // Reset on success
     log.info("branch", `Matched → ${extractedBranch.name} (code: ${extractedBranch.code})`, { callSid });
   }
+  
+  /* ── Branch retry guard: max 3 attempts ── */
+  if (nextState === "awaiting_branch") {
+    session.branchRetries = (session.branchRetries || 0) + 1;
+    if (session.branchRetries >= 3) {
+      log.warn("input", "Branch retry limit reached — offering agent", { callSid });
+      const msg = V.offerAgent(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent, systemReply: msg });
+      session.ending = true;
+      sessionStore.set(callSid, session);
+      setTimeout(() => sessionStore.delete(callSid), 5000);
+      await endSession(callSid, "branch_max_retries", "no_response");
+      buildVoiceResponse({ twiml, message: msg, actionUrl: action, hangup: true });
+      return sendTwiML(res, twiml);
+    }
+  }
 
-  /* ── Persuasion counter — increment AFTER NLP call ── */
+  /* ── Persuasion counter with cap ── */
   if (
     (session.state === "awaiting_reason" || session.state === "awaiting_reason_persisted") &&
     nextState === "awaiting_reason_persisted"
   ) {
     session.persuasionCount = (session.persuasionCount || 0) + 1;
     log.info("input", `persuasionCount now ${session.persuasionCount}`, { callSid });
+    
+    /* ── NEW: Persuasion cap — if exceeded, end call with rejection ── */
+    if (session.persuasionCount >= CFG.MAX_PERSUASION) {
+      log.info("input", "Max persuasion cap reached — ending with rejection", { callSid });
+      nextState = "ended";
+      endCall = true;
+    }
   }
 
-  /* ── Unknown streak (only for states that can get stuck) ── */
+  /* ── Unknown streak ── */
   const stateStuck =
     nextState === session.state &&
     ["awaiting_initial_decision","awaiting_reason","awaiting_branch"].includes(nextState);
   session.unknownStreak = stateStuck ? session.unknownStreak + 1 : 0;
 
-  /* ── Override NLP reply text with human voice lines for key states ── */
+  /* ── Voice line overrides ── */
   let finalReplyText = replyText;
 
   if (nextState === "awaiting_date_confirm" && (preferredDate || session.preferredDate)) {
     const dateTok = preferredDate || session.preferredDate;
-    const display = resolvedDate?.display || (dateTok ? require('./dateResolver.js').resolveDate(dateTok)?.display : null) || dateTok;
+    const display = resolvedDate?.display || (dateTok ? resolveDisplayDate(dateTok) : null) || dateTok;
     finalReplyText = V.confirmDate(name, display);
   }
 
   if (nextState === "ended" && session.state === "awaiting_branch" && session.assignedBranchName) {
-    const display = session.resolvedDate?.display || session.preferredDate || "नियत तारीख";
+    const display = session.resolvedDate?.display || session.preferredDate || "nirdharit tarikh";
     finalReplyText = V.confirmBooking(name, session.assignedBranchName, session.assignedBranchCity, display);
   }
 
@@ -638,15 +916,9 @@ async function handleUserInput(req, res) {
     finalReplyText = V.askReason(name);
   }
 
-  if (nextState === "awaiting_date" && session.state === "awaiting_initial_decision") {
-    finalReplyText = V.askDate(name);
-  }
-
-  if (nextState === "awaiting_date" && (
-    session.state === "awaiting_reason" ||
-    session.state === "awaiting_reason_persisted" ||
-    session.state === "awaiting_date_confirm"
-  )) {
+  if (nextState === "awaiting_date" &&
+    ["awaiting_initial_decision","awaiting_reason","awaiting_reason_persisted","awaiting_date_confirm"].includes(session.state)
+  ) {
     finalReplyText = V.askDate(name);
   }
 
@@ -662,23 +934,18 @@ async function handleUserInput(req, res) {
     finalReplyText = V.persuasionFinal(name);
   }
 
-  /* ── Objection voice lines ── */
-  if (nextState === "awaiting_date" && intent === INTENT.DRIVER_NOT_AVAILABLE) {
-    finalReplyText = V.objectionDriverNotAvailable(name);
-  } else if (nextState === "awaiting_date" && intent === INTENT.MACHINE_BUSY) {
-    finalReplyText = V.objectionMachineBusy(name);
-  } else if (nextState === "awaiting_date" && intent === INTENT.WORKING_FINE) {
-    finalReplyText = V.objectionWorkingFine(name);
-  } else if (nextState === "awaiting_date" && intent === INTENT.MONEY_ISSUE) {
-    finalReplyText = V.objectionMoneyIssue(name);
-  } else if (nextState === "awaiting_date" && intent === INTENT.CALL_LATER) {
-    finalReplyText = V.objectionCallLater(name);
+  if (nextState === "awaiting_date") {
+    if      (intent === INTENT.DRIVER_NOT_AVAILABLE) finalReplyText = V.objectionDriverNotAvailable(name);
+    else if (intent === INTENT.MACHINE_BUSY)         finalReplyText = V.objectionMachineBusy(name);
+    else if (intent === INTENT.WORKING_FINE)         finalReplyText = V.objectionWorkingFine(name);
+    else if (intent === INTENT.MONEY_ISSUE)          finalReplyText = V.objectionMoneyIssue(name);
+    else if (intent === INTENT.CALL_LATER)           finalReplyText = V.objectionCallLater(name);
   }
 
   /* ── Log turn ── */
   appendTurn(session, { customerSaid: rawSpeech, confidence, intent, systemReply: finalReplyText });
 
-  /* ── FIX: Resolve outcome BEFORE mutating session.state ── */
+  /* ── Resolve outcome BEFORE mutating session.state ── */
   const previousState = session.state;
   let callOutcome = null;
   if (endCall || nextState === "ended") {
@@ -693,10 +960,10 @@ async function handleUserInput(req, res) {
 
   log.info("input", `→ ${nextState} | intent: ${intent}`, {
     callSid,
-    date: session.preferredDate || "N/A",
+    date:         session.preferredDate  || "N/A",
     resolvedDate: session.resolvedDate?.display || "N/A",
-    iso:    session.resolvedDate?.iso || "N/A",
-    branch: session.assignedBranchCode || "N/A",
+    iso:          session.resolvedDate?.iso     || "N/A",
+    branch:       session.assignedBranchCode    || "N/A",
   });
 
   /* ── End or continue ── */
@@ -704,10 +971,23 @@ async function handleUserInput(req, res) {
     await endSession(callSid, `end_${nextState}`, callOutcome);
     buildVoiceResponse({ twiml, message: finalReplyText, actionUrl: action, hangup: true });
   } else {
+    // Always save session before responding
+    sessionStore.set(callSid, session);
     buildVoiceResponse({ twiml, message: finalReplyText, actionUrl: action });
   }
 
   return sendTwiML(res, twiml);
+}
+
+/* =====================================================================
+   HELPER: Safe display date resolver
+   ===================================================================== */
+function resolveDisplayDate(token) {
+  try {
+    return resolveDate(token)?.display || null;
+  } catch {
+    return null;
+  }
 }
 
 /* =====================================================================
