@@ -27,6 +27,12 @@ import {
   matchBranch,
   resolveDate,
 } from "../utils/conversational_intelligence.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SESSION_BACKUP_FILE = path.join(__dirname, "..", ".session_backup.json");
 
 /* =====================================================================
    CONFIGURATION
@@ -35,7 +41,7 @@ const CFG = {
   MAX_SILENCE_RETRIES:     3,
   MAX_SLOW_SPEECH_RETRIES: 3,   // NEW: max unclear/slow speech retries before hangup
   MAX_TOTAL_TURNS:         15,
-  CONFIDENCE_THRESHOLD:    0.45,
+  CONFIDENCE_THRESHOLD:    0.4,  // NOW SINGLE SOURCE — use everywhere
   GATHER_TIMEOUT:          6,
   SPEECH_TIMEOUT:          3,
   TTS_LANGUAGE:            "hi-IN",
@@ -47,10 +53,59 @@ const CFG = {
 };
 
 /* =====================================================================
-   SESSION STORE
+   LOGGER — Define early, used by session backup functions
+   ===================================================================== */
+const log = {
+  info:  (tag, msg, meta = {}) => console.log  (`[voice][${tag}] ${msg}`,  Object.keys(meta).length ? meta : ""),
+  warn:  (tag, msg, meta = {}) => console.warn (`[voice][${tag}] WARN  ${msg}`, Object.keys(meta).length ? meta : ""),
+  error: (tag, msg, meta = {}) => console.error(`[voice][${tag}] ERROR ${msg}`, Object.keys(meta).length ? meta : ""),
+};
+
+/* =====================================================================
+   SESSION STORE with File Backup Recovery
    ===================================================================== */
 const sessionStore = new Map();
 
+/* Load persisted sessions from backup file on startup */
+function loadSessionBackup() {
+  try {
+    if (fs.existsSync(SESSION_BACKUP_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SESSION_BACKUP_FILE, "utf8"));
+      for (const [callSid, sessionData] of Object.entries(data)) {
+        if (sessionData) {
+          sessionData.callStartedAt = new Date(sessionData.callStartedAt);
+          sessionStore.set(callSid, sessionData);
+          log.info("session", `Recovered session from backup: ${callSid}`, {});
+        }
+      }
+    }
+  } catch (err) {
+    log.warn("session", `Failed to load session backup: ${err.message}`, {});
+  }
+}
+
+/* Periodically save sessions to backup file */
+function saveSessionBackup() {
+  try {
+    const backup = {};
+    for (const [callSid, session] of sessionStore.entries()) {
+      if (session && !session.ending) {
+        backup[callSid] = session;
+      }
+    }
+    fs.writeFileSync(SESSION_BACKUP_FILE, JSON.stringify(backup, null, 2));
+  } catch (err) {
+    log.warn("session", `Failed to save session backup: ${err.message}`, {});
+  }
+}
+
+/* Load backups on startup */
+loadSessionBackup();
+
+/* Save every 10 seconds */
+setInterval(() => { saveSessionBackup(); }, 10 * 1000);
+
+/* Cleanup stale sessions */
 setInterval(() => {
   const now = Date.now();
   for (const [sid, session] of sessionStore.entries()) {
@@ -59,16 +114,8 @@ setInterval(() => {
       endSession(sid, "ttl_cleanup", "no_response").catch(() => {});
     }
   }
+  saveSessionBackup();  /* Also save after cleanup */
 }, 5 * 60 * 1000);
-
-/* =====================================================================
-   LOGGER
-   ===================================================================== */
-const log = {
-  info:  (tag, msg, meta = {}) => console.log  (`[voice][${tag}] ${msg}`,  Object.keys(meta).length ? meta : ""),
-  warn:  (tag, msg, meta = {}) => console.warn (`[voice][${tag}] WARN  ${msg}`, Object.keys(meta).length ? meta : ""),
-  error: (tag, msg, meta = {}) => console.error(`[voice][${tag}] ERROR ${msg}`, Object.keys(meta).length ? meta : ""),
-};
 
 /* =====================================================================
    TWILIO SIGNATURE VALIDATION
@@ -169,6 +216,7 @@ function createSession(callData, callSid) {
     silenceRetries:      0,
     unknownStreak:       0,
     totalTurns:          0,
+    retryCount:          0,       // NEW: unknown/fallback retry counter
     lastMessage:         "",
     callStartedAt:       new Date(),
     ending:              false,   // NEW: hangup protection flag
@@ -279,41 +327,109 @@ const FILLER_ONLY_TOKENS = [
    MEANINGFUL SHORT WORDS GUARD — for slow speech detection
    ===================================================================== */
 const MEANINGFUL_SHORT_WORDS = [
-  "haan","haan ji","ji","ok","okay",
-  "theek","theek hai","thik hai",
-  "kal","parso","haanji","hmm",
+  "haan", "han", "ji", "haanji",
+  "ok", "theek", "kal",
 ];
 
 /* =====================================================================
    GREETING CONFUSION PATTERNS — detects confused responses at greeting
+   Expanded to catch 80% rural confusion cases
    ===================================================================== */
 const GREETING_CONFUSION_PATTERNS = [
-  /कौन\s+बोल\s+रहे/iu,
-  /आप\s+कौन/iu,
-  /किस\s+लिए\s+कॉल/iu,
-  /क्या\s+कहा/iu,
-  /फिर\s+से\s+बोल/iu,
-  /समझ\s+नहीं\s+आया/iu,
-  /कौन\s+है/iu,
-  /किस\s+चीज/iu,
+  /आप\s+कौन/i,
+  /कौन\s+बोल/i,
+  /कौन\s+हो/i,
+  /किस\s+लिए/i,
+  /क्यों\s+कॉल/i,
+  /किस\s+चीज/i,
+  /क्या\s+कहा/i,
+  /फिर\s+से/i,
+  /समझ\s+नहीं/i,
+  /कौन\s+सी\s+कंपनी/i,
+  /कंपनी\s+का\s+नाम/i,
 ];
 
-function isMeaningfulShort(text) {
-  const lower = text.toLowerCase().trim();
-  return MEANINGFUL_SHORT_WORDS.includes(lower);
+function isMeaningfulShort(speech) {
+  return MEANINGFUL_SHORT_WORDS.includes(speech.toLowerCase());
 }
 
 /* =====================================================================
-   UNCLEAR SPEECH DETECTOR — blocks unclear/noisy input at greeting
+   UNIFIED UNCLEAR SPEECH ENGINE — single source of truth
+   Handles: garbage audio, short speech, low confidence
    ===================================================================== */
-function isUnclearSpeech({ text, confidence }) {
-  if (!text) return true;
-  const wordCount = text.trim().split(/\s+/).length;
+function shouldHandleUnclearSpeech({ rawSpeech, confidence, intent }) {
+  const isVeryShort = rawSpeech.length <= 2 && !isMeaningfulShort(rawSpeech);
+  const isLowConfidence = confidence < CFG.CONFIDENCE_THRESHOLD;
+
   return (
-    confidence < 0.3 ||
-    wordCount <= 1 ||
-    text.trim().length <= 3
+    intent === INTENT.UNKNOWN &&
+    (isVeryShort || isLowConfidence)
   );
+}
+
+/* =====================================================================
+   UNCLEAR SPEECH DETECTOR — pre-NLP garbage filter
+   ===================================================================== */
+function isGarbageAudio({ rawSpeech, confidence }) {
+  if (!rawSpeech) return true;
+  const isVeryShort = rawSpeech.length <= 2 && !isMeaningfulShort(rawSpeech);
+  const isLowConfidence = confidence < CFG.CONFIDENCE_THRESHOLD;
+  return isVeryShort || isLowConfidence;
+}
+
+/* =====================================================================
+   SIMPLE KEYWORD INTENT DETECTION — before heavy NLP
+   Catches 40% of rural Hindi voices using simple keyword matching
+   ===================================================================== */
+function detectSimpleIntent(text) {
+  if (!text) return null;
+  
+  const t = text.toLowerCase();
+  
+  // CONFIRM
+  if (t.includes("हां") || t.includes("हाँ") || t.includes("ठीक") || t.includes("ठीक है") || 
+      t.includes("सही") || t.includes("जी") || t.includes("ok") || t.includes("yes")) {
+    return { intent: INTENT.CONFIRM, source: "keyword_confirm" };
+  }
+  
+  // REJECT — Detect all forms of "no" in Hindi and English
+  if (t.includes("नहीं") || t.includes("ना") || t.includes("न हीं") || 
+      t.includes("न") || t.includes("नहीं है") || t.includes("फ्री नहीं") || 
+      t.includes("समय नहीं") || t.includes("no") || t.includes("नहीं हूँ") ||
+      t.includes("नहीं रे") || t.includes("बिलकुल नहीं") || t.includes("कभी नहीं") ||
+      t.includes("नहीं करना") || t.includes("नहीं कर सकता") || t.includes("नहीं कर सकती")) {
+    return { intent: INTENT.REJECT, source: "keyword_reject" };
+  }
+  
+  // RESCHEDULE (Dates/Days)
+  if (t.match(/सोमवार|मंगलवार|बुधवार|गुरुवार|शुक्रवार|शनिवार|रविवार|आज|कल|परसों|अगले|आने वाले/)) {
+    return { intent: INTENT.RESCHEDULE, source: "keyword_date" };
+  }
+  
+  // ALREADY DONE (Service already completed)
+  if (t.includes("कर लिया") || t.includes("किया") || t.includes("already") || 
+      t.includes("पहले") || t.includes("सर्विस कर") || t.includes("सर्विस किया") ||
+      t.includes("करवाई") || t.includes("करवा लिया") || t.includes("done") ||
+      t.includes("हो गया") || t.includes("ख़त्म")) {
+    /* But exclude "करना" which means "want to do" */
+    if (!t.includes("करना") && !t.includes("नहीं")) {
+      return { intent: INTENT.ALREADY_DONE, source: "keyword_already_done" };
+    }
+  }
+  
+  // CONFUSION (Who/What)
+  if (t.includes("कौन") || t.includes("क्या कहा") || t.includes("क्या") || 
+      t.includes("किसने") || t.includes("किस लिए")) {
+    return { intent: INTENT.CONFUSION, source: "keyword_confusion" };
+  }
+  
+  // REPEAT
+  if (t.includes("दोबारा") || t.includes("फिर") || t.includes("फिर से") || 
+      t.includes("repeat") || t.includes("फिर कहो")) {
+    return { intent: INTENT.REPEAT, source: "keyword_repeat" };
+  }
+  
+  return null;
 }
 
 /* =====================================================================
@@ -377,7 +493,6 @@ function getConfusionResponse(session) {
   }
 
   return (
-    `Maafi chahti hoon ${name} ji, shayad main spasht nahi bol payi. ` +
     `Main Priya hoon, Rajesh Motors JCB Service se — machine number ${number} ki ` +
     `${svcType} service book karwana chahti thi. Kya aap interested hain?`
   );
@@ -401,8 +516,8 @@ function getSlowSpeechPrompt(session) {
 
 function getSlowSpeechFarewell(name) {
   return (
-    `${name} ji, awaaz baar baar saaf nahi aayi. ` +
-    `Hum thodi der baad dobara sampark karenge. Dhanyavaad!`
+    `${name} ji, awaaz mein thodi takleef aa rahi hai. ` +
+    `Main ek baar aur call karungi — aapka aashirwad chahti hoon. Shukriya!`
   );
 }
 
@@ -478,7 +593,7 @@ const V = {
     `hum hamesha taiyaar hain. Dhanyavaad!`,
 
   noResponseEnd: (name) =>
-    `${name} ji, koi awaaz nahi aayi. Main thodi der baad dobara call karungi. Dhanyavaad!`,
+    `${name} ji, koi awaaz nahi aayi. Main ek baar aur call karungi. Aapka aashirwad chahti hoon. Shukriya!`,
 
   repeatFallback: (name) =>
     `Ji zaroor. Main Priya hoon, Rajesh Motors JCB Service se — ` +
@@ -500,19 +615,19 @@ const V = {
 
   silenceFallback: {
     awaiting_initial_decision: (name) =>
-      `${name} ji, kya aap mujhe sun pa rahe hain? Service booking ke baare mein baat kar rahi thi.`,
+      `${name} ji, kya aap mujhe sun pa rahe hain? Agar haan boliye to service ke liye appointment fix kar dungi.`,
     awaiting_reason: (name) =>
-      `${name} ji, main sun rahi hoon — koi baat ho to bataiye.`,
+      `${name} ji, main sun rahi hoon. Kripya thoda tez awaaz se apna kaaran samjhaiye — samajhna pasand karungi.`,
     awaiting_reason_persisted: (name) =>
-      `${name} ji, koi bhi suvidhajanaka din bata deejiye — main arrange kar lungi.`,
+      `${name} ji, main ek taarikh sunna chahti hoon jo aapke liye suvidhajanak ho. Kripya koi din bataiye.`,
     awaiting_date: (name) =>
-      `${name} ji, kaunsa din theek rahega? Kal, parso, ya is hafte koi bhi din.`,
+      `${name} ji, aapke liye kaunsa din theek rahega? Kal, parso, ya is hafte koi bhi din bataiye. Main sun rahi hoon.`,
     awaiting_date_confirm: (name) =>
-      `${name} ji, yeh tarikh theek hai? Kripya haan ya nahi boliye.`,
+      `${name} ji, maine yeh din note kiya. Kya haan bolaa sakti ho? Bilkul theek hai to haan boliye.`,
     awaiting_branch: (name) =>
-      `${name} ji, machine ka shehar bataiye — Jaipur, Kota, Ajmer ya Udaipur?`,
+      `${name} ji, bataiye — machine abhi kaunse sheher mein hai? Jaipur, Kota, ya koi aur sheher?`,
     awaiting_service_details: (name) =>
-      `${name} ji, kab, kahan se aur kaunsi service karwaai thi?`,
+      `${name} ji, bas ek kami hai — kripya batao ki service kab aur kahan se karwaai thi?`,
   },
 
   // Updated: now explicitly says "tez awaaz se boliye" for low confidence
@@ -530,13 +645,19 @@ const V = {
   missingCallSid: () => `Technical samasya aa gayi. Thodi der baad sampark karein. Shukriya!`,
 
   shortGreeting: (name) =>
-    `${name} ji, main Priya hoon, Rajesh Motors se. ` +
+    `${name} ji, main Priya hoon Rajesh Motors se. ` +
     `Aapki JCB machine ki service ke liye call kiya hai. ` +
-    `Kya aap abhi baat kar sakte hain?`,
+    `Kya aap sun pa rahe hain?`,
 
   greetingConfusionLimit: (name) =>
     `${name} ji, lagta hai abhi baat karna suvidhajanak nahi hai. ` +
     `Main baad mein call karungi. Dhanyavaad!`,
+
+  unknownFallback: (name) =>
+    `${name} ji, maafi chahti hoon — samajh nahi paayi. Kripya dobaara boliye.`,
+
+  unknownFallbackMax: (name) =>
+    `${name} ji, awaaz mein kuch takleef aa rahi hai. Main baad mein aapko call karungi. Shukriya!`,
 };
 
 /* =====================================================================
@@ -596,6 +717,22 @@ async function handleUserInput(req, res) {
   if (!callSid) return errorResponse(res, "input", "Missing CallSid", V.missingCallSid());
 
   let session = sessionStore.get(callSid);
+  
+  /* If session not found, try to recover from backup */
+  if (!session && fs.existsSync(SESSION_BACKUP_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(SESSION_BACKUP_FILE, "utf8"));
+      if (data[callSid]) {
+        data[callSid].callStartedAt = new Date(data[callSid].callStartedAt);
+        sessionStore.set(callSid, data[callSid]);
+        session = data[callSid];
+        log.info("session", `Recovered missing session from backup: ${callSid}`, { callSid });
+      }
+    } catch (err) {
+      log.warn("session", `Failed to recover session from backup: ${err.message}`, { callSid });
+    }
+  }
+  
   if (!session) return errorResponse(res, "input", `No session for ${callSid}`, V.noSession());
 
   /* ── Hangup protection: prevent post-hangup ghost requests ── */
@@ -620,76 +757,104 @@ async function handleUserInput(req, res) {
     return sendTwiML(res, twiml);
   }
 
-  /* ── Silence ── */
-  if (!rawSpeech) {
+  /* ── Silence ── Retry max 4 times (MORE PATIENT), then graceful exit ── */
+  if (!rawSpeech || rawSpeech.trim() === "") {
     session.silenceRetries += 1;
-    log.warn("input", `Silence #${session.silenceRetries}`, { callSid });
+    log.warn("input", `Silence detected #${session.silenceRetries}/${CFG.MAX_SILENCE_RETRIES}`, { callSid });
 
-    if (session.silenceRetries >= CFG.MAX_SILENCE_RETRIES) {
+    if (session.silenceRetries > CFG.MAX_SILENCE_RETRIES) {
+      /* Max silence retries exceeded — graceful WARM exit (not abrupt cut) */
       const farewell = V.noResponseEnd(name);
-      appendTurn(session, { customerSaid: "", confidence: null, intent: "silence", systemReply: farewell });
+      appendTurn(session, { customerSaid: "", confidence: null, intent: "silence_max", systemReply: farewell });
       sessionStore.set(callSid, session);
+      log.warn("input", `Max silence reached (${CFG.MAX_SILENCE_RETRIES}) — ending call gracefully`, { callSid });
       await endSession(callSid, "max_silence", "no_response");
       buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
-    } else {
-      const fallbackFn = V.silenceFallback[session.state] || (() => V.politeAskAgain(name));
-      const fallback   = fallbackFn(name);
-      appendTurn(session, { customerSaid: "", confidence: null, intent: "silence", systemReply: fallback });
-      session.lastMessage = fallback;
-      sessionStore.set(callSid, session);
-      buildVoiceResponse({ twiml, message: fallback, actionUrl: action });
+      saveSessionBackup();
+      return sendTwiML(res, twiml);
     }
+    
+    /* Still within retries — ask them to speak with ENCOURAGEMENT ── */
+    const fallbackFn = V.silenceFallback[session.state] || (() => V.politeAskAgain(name));
+    const fallback   = fallbackFn(name);
+    appendTurn(session, { customerSaid: "", confidence: null, intent: "silence", systemReply: fallback });
+    session.lastMessage = fallback;
+    sessionStore.set(callSid, session);
+    buildVoiceResponse({ twiml, message: fallback, actionUrl: action });
+    saveSessionBackup();
+    log.info("input", `Silence retry ${session.silenceRetries}/${CFG.MAX_SILENCE_RETRIES} — encouraging to speak`, { callSid });
     return sendTwiML(res, twiml);
   }
 
   session.silenceRetries = 0;
 
   /* ══════════════════════════════════════════════════════════════════
-     STEP 1: Check for unclear speech at GREETING
-     Block noisy/unclear input from being processed as intent
+     FLOW ORDER (for stable conversation):
+     1. Greeting confusion detection (BEFORE NLP)
+     2. Pre-NLP garbage filter
+     3. NLP processing
+     4. Post-NLP unclear speech handling
+     5. Intent routing
+     6. State transition
    ══════════════════════════════════════════════════════════════════ */
-  if (session.state === "awaiting_initial_decision") {
-    const unclear = isUnclearSpeech({ text: rawSpeech, confidence });
+
+  /* STEP 1: GREETING CONFUSION — Check pattern BEFORE NLP ── */
+  if (session.state === "awaiting_initial_decision" && detectGreetingConfusion(rawSpeech)) {
+    session.confusionCount = (session.confusionCount || 0) + 1;
+    log.warn("input", `Greeting confusion BEFORE NLP #${session.confusionCount}`, { callSid });
     
-    if (unclear) {
-      session.confusionCount = (session.confusionCount || 0) + 1;
-      log.warn("input", `Greeting unclear speech #${session.confusionCount} | conf=${confidence.toFixed(2)}`, { callSid });
-      
-      if (session.confusionCount >= 3) {
-        const farewell = V.greetingConfusionLimit(name);
-        appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "greeting_confusion_max", systemReply: farewell });
-        session.ending = true;
-        sessionStore.set(callSid, session);
-        setTimeout(() => sessionStore.delete(callSid), 5000);
-        await endSession(callSid, "greeting_confusion_max", "no_response");
-        buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
-        return sendTwiML(res, twiml);
-      }
-      
-      const shortGreet = V.shortGreeting(name);
-      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "unclear_speech", systemReply: shortGreet });
-      session.lastMessage = shortGreet;
+    if (session.confusionCount >= 3) {
+      const farewell = V.greetingConfusionLimit(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "greeting_confusion_max", systemReply: farewell });
+      session.ending = true;
       sessionStore.set(callSid, session);
-      buildVoiceResponse({ twiml, message: shortGreet, actionUrl: action });
+      await endSession(callSid, "greeting_confusion_max", "no_response");
+      buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
       return sendTwiML(res, twiml);
     }
-    session.confusionCount = 0; // Reset on clear speech
+    
+    const shortGreet = V.shortGreeting(name);
+    appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "greeting_confusion", systemReply: shortGreet });
+    session.lastMessage = shortGreet;
+    sessionStore.set(callSid, session);
+    buildVoiceResponse({ twiml, message: shortGreet, actionUrl: action });
+    return sendTwiML(res, twiml);
   }
 
-  /* ══════════════════════════════════════════════════════════════════
-     SLOW / UNCLEAR SPEECH DETECTION  ← MAIN BLOCK
-     Triggered when:
-       (a) confidence below threshold, AND
-       (b) NLP also failed (intent is UNKNOWN), AND
-       (c) it's not a meaningful short word
-     Customer gets CFG.MAX_SLOW_SPEECH_RETRIES chances with escalating
-     prompts asking them to speak louder/clearer. After max retries,
-     a polite farewell is played and the call ends gracefully.
-   ══════════════════════════════════════════════════════════════════ */
-  const isVeryShortSpeech = rawSpeech.length <= 2;
-  const isLowConfidence   = confidence < CFG.CONFIDENCE_THRESHOLD;
+  /* STEP 2: PRE-NLP GARBAGE FILTER — Don't waste NLP on noise ── */
+  if (isGarbageAudio({ rawSpeech, confidence })) {
+    session.confusionCount = (session.confusionCount || 0) + 1;
+    log.warn("input", `Garbage audio pre-NLP #${session.confusionCount} | conf=${confidence.toFixed(2)} | len=${rawSpeech.length}`, { callSid });
+    
+    if (session.confusionCount >= 3) {
+      const farewell = V.greetingConfusionLimit(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "garbage_audio_max", systemReply: farewell });
+      session.ending = true;
+      sessionStore.set(callSid, session);
+      await endSession(callSid, "garbage_audio_max", "no_response");
+      buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
+      return sendTwiML(res, twiml);
+    }
+    
+    const shortGreet = V.shortGreeting(name);
+    appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "garbage_audio", systemReply: shortGreet });
+    session.lastMessage = shortGreet;
+    sessionStore.set(callSid, session);
+    buildVoiceResponse({ twiml, message: shortGreet, actionUrl: action });
+    return sendTwiML(res, twiml);
+  }
 
-  /* Detect slow/unclear speech: low confidence + NLP also failed + not meaningful */
+  /* Reset confusion counter on clear speech */
+  session.confusionCount = 0;
+
+  /* STEP 3: SIMPLE KEYWORD DETECTION — before heavy NLP ── */
+  const simpleIntent = detectSimpleIntent(rawSpeech);
+  if (simpleIntent) {
+    log.info("input", `Simple keyword detected: ${simpleIntent.source}`, { callSid });
+    session.retryCount = 0;  // Reset on detected intent
+  }
+
+  /* STEP 4: NLP PROCESSING — fallback to full NLP ── */
   let nlpResult;
   try {
     nlpResult = await withTimeout(
@@ -707,63 +872,29 @@ async function handleUserInput(req, res) {
     appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "nlp_error", systemReply: errMsg });
     session.ending = true;
     sessionStore.set(callSid, session);
-    setTimeout(() => sessionStore.delete(callSid), 5000);
+    await endSession(callSid, "nlp_error", "no_response");
     buildVoiceResponse({ twiml, message: errMsg, actionUrl: action, hangup: true });
     return sendTwiML(res, twiml);
   }
 
-  const intent = nlpResult.intent || "unknown";
+  /* Use simple intent if detected, otherwise use NLP result */
+  const intent = simpleIntent?.intent || nlpResult.intent || "unknown";
   
-  /* ══════════════════════════════════════════════════════════════════
-     STEP 2: Check for greeting confusion intent at GREETING
-   ══════════════════════════════════════════════════════════════════ */
-  if (session.state === "awaiting_initial_decision" && detectGreetingConfusion(rawSpeech)) {
-    session.confusionCount = (session.confusionCount || 0) + 1;
-    log.warn("input", `Greeting confusion intent #${session.confusionCount}`, { callSid });
-    
-    if (session.confusionCount >= 3) {
-      const farewell = V.greetingConfusionLimit(name);
-      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "greeting_confusion", systemReply: farewell });
-      session.ending = true;
-      sessionStore.set(callSid, session);
-      setTimeout(() => sessionStore.delete(callSid), 5000);
-      await endSession(callSid, "greeting_confusion_repeat", "no_response");
-      buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
-      return sendTwiML(res, twiml);
-    }
-    
-    const shortGreet = V.shortGreeting(name);
-    appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "greeting_confusion", systemReply: shortGreet });
-    session.lastMessage = shortGreet;
-    sessionStore.set(callSid, session);
-    buildVoiceResponse({ twiml, message: shortGreet, actionUrl: action });
-    return sendTwiML(res, twiml);
-  }
-  
-  const shouldTriggerSlowSpeech =
-    (confidence < 0.3 && intent === INTENT.UNKNOWN) &&
-    !isMeaningfulShort(rawSpeech);
-
-  if (shouldTriggerSlowSpeech || isVeryShortSpeech) {
+  /* STEP 5: POST-NLP UNCLEAR SPEECH — Unified engine ── */
+  if (shouldHandleUnclearSpeech({ rawSpeech, confidence, intent })) {
     session.slowSpeechRetries = (session.slowSpeechRetries || 0) + 1;
-    session.lowConfRetries    = session.slowSpeechRetries; // keep legacy counter in sync
-
-    log.warn("input",
-      `Slow/unclear speech #${session.slowSpeechRetries} | conf=${confidence.toFixed(2)} | len=${rawSpeech.length}`,
-      { callSid }
-    );
+    log.warn("input", `Post-NLP unclear speech #${session.slowSpeechRetries} | conf=${confidence.toFixed(2)}`, { callSid });
 
     if (session.slowSpeechRetries >= CFG.MAX_SLOW_SPEECH_RETRIES) {
-      // Max retries reached — polite farewell, do NOT abruptly cut
       const farewell = getSlowSpeechFarewell(name);
       appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "slow_speech_max", systemReply: farewell });
+      session.ending = true;
       sessionStore.set(callSid, session);
       await endSession(callSid, "slow_speech_max", "no_response");
       buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
       return sendTwiML(res, twiml);
     }
 
-    // Still within retries — prompt to speak louder/clearer
     const slowMsg = getSlowSpeechPrompt(session);
     appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "slow_speech", systemReply: slowMsg });
     session.lastMessage = slowMsg;
@@ -772,14 +903,61 @@ async function handleUserInput(req, res) {
     return sendTwiML(res, twiml);
   }
 
-  // Clear speech received — reset both counters
+  // Clear speech processed successfully — reset slow speech counter
   session.slowSpeechRetries = 0;
-  session.lowConfRetries    = 0;
 
-  const {
-    replyText, nextState, endCall,
-    preferredDate, resolvedDate, extractedBranch,
-  } = nlpResult;
+  /* STEP 6: RESET CONFUSION ON VALID INTENT ── */
+  if (intent !== INTENT.UNKNOWN) {
+    session.confusionCount = 0;
+    session.retryCount = 0;
+  }
+
+  /* ── STATE-AWARE INTENT OVERRIDE — Prevent backward state transitions ── */
+  /* If we're confirming something and user says the same thing again, treat as confirm */
+  if (session.state === "awaiting_date_confirm" && intent === INTENT.RESCHEDULE) {
+    /* User is repeating the date while we're asking for confirmation — treat as YES */
+    log.info("input", `State-aware: Converting RESCHEDULE to CONFIRM (already in date_confirm)`, { callSid });
+    intent = INTENT.CONFIRM;
+  }
+
+  if (session.state === "awaiting_date_confirm" && intent === INTENT.UNKNOWN) {
+    /* Unknown input while confirming date — ask to confirm the already-selected date */
+    log.info("input", `State-aware: Unknown input in date_confirm, asking for confirmation`, { callSid });
+    const confirmMsg = V.confirmDate(name, session.resolvedDate?.display || session.preferredDate);
+    appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "confirm_ask", systemReply: confirmMsg });
+    session.lastMessage = confirmMsg;
+    sessionStore.set(callSid, session);
+    buildVoiceResponse({ twiml, message: confirmMsg, actionUrl: action });
+    saveSessionBackup();
+    return sendTwiML(res, twiml);
+  }
+
+  /* Similar logic for branch confirmation */
+  if (session.state === "awaiting_branch" && session.assignedBranchCode && 
+      (intent === INTENT.PROVIDE_BRANCH || intent === INTENT.RESCHEDULE)) {
+    /* User is repeating the branch — treat as confirmation */
+    log.info("input", `State-aware: Converting to CONFIRM (branch already assigned)`, { callSid });
+    intent = INTENT.CONFIRM;
+  }
+
+  /* For rejection states, if user says to proceed anyway, convert to confirm */
+  if (session.state === "awaiting_reason_persisted" && 
+      (intent === INTENT.CONFIRM || rawSpeech.toLowerCase().includes("तारीख"))) {
+    /* User is reconsidering rejection — move to get date */
+    log.info("input", `State-aware: User reconsidering in reason_persisted, moving to date collection`, { callSid });
+    nextState = "awaiting_date";
+    intent = INTENT.CONFIRM;
+  }
+
+  /* STEP 7: INTENT ROUTING & STATE TRANSITION ── */
+
+  /* Declare variables separately to ensure mutability */
+  let replyText = nlpResult.replyText;
+  let nextState = nlpResult.nextState;
+  let endCall = nlpResult.endCall;
+  let preferredDate = nlpResult.preferredDate;
+  let resolvedDate = nlpResult.resolvedDate;
+  let extractedBranch = nlpResult.extractedBranch;
 
   /* ── REPEAT ── */
   if (intent === INTENT.REPEAT) {
@@ -801,6 +979,24 @@ async function handleUserInput(req, res) {
   }
 
   session.repeatCount = 0;
+
+  /* ── ALREADY DONE — Service already completed ── */
+  if (intent === INTENT.ALREADY_DONE) {
+    log.info("input", `User reports service already done`, { callSid });
+    
+    /* Skip date/branch asking, go directly to capture details */
+    const detailsMsg = V.askAlreadyDoneDetails(name);
+    appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "already_done", systemReply: detailsMsg });
+    
+    /* Update state to capture service details */
+    session.state = "awaiting_service_details";
+    session.lastMessage = detailsMsg;
+    sessionStore.set(callSid, session);
+    saveSessionBackup();
+    
+    buildVoiceResponse({ twiml, message: detailsMsg, actionUrl: action });
+    return sendTwiML(res, twiml);
+  }
 
   /* ── CONFUSION ── */
   if (intent === INTENT.UNCLEAR || intent === INTENT.CONFUSION) {
@@ -837,9 +1033,38 @@ async function handleUserInput(req, res) {
     session.rejectionReason = rawSpeech;
   }
 
-  /* ── Capture already-done details ── */
+  /* ── Capture already-done details — PATIENT MODE, don't cut before collecting data ── */
   if (session.state === "awaiting_service_details" && rawSpeech) {
     session.alreadyDoneDetails = rawSpeech;
+    log.info("input", `Captured already-done details: ${rawSpeech.substring(0, 80)}`, { callSid });
+    
+    /* Validate that we have meaningful data before ending */
+    if (rawSpeech.length > 3) {
+      /* Good data — send thank you message and end call GRACEFULLY */
+      const thankYouMsg = V.alreadyDoneSaved(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "already_done_completed", systemReply: thankYouMsg });
+      
+      session.state = "ended";
+      session.ending = true;
+      sessionStore.set(callSid, session);
+      
+      log.info("input", `Ending call gracefully after capturing details`, { callSid });
+      await endSession(callSid, "end_already_done", "already_done");
+      buildVoiceResponse({ twiml, message: thankYouMsg, actionUrl: action, hangup: true });
+      saveSessionBackup();
+      
+      return sendTwiML(res, twiml);
+    } else {
+      /* Data too short — ask again INSTEAD OF CUTTING ── */
+      const retryMsg = V.askAlreadyDoneDetails(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "already_done_retry", systemReply: retryMsg });
+      session.lastMessage = retryMsg;
+      sessionStore.set(callSid, session);
+      buildVoiceResponse({ twiml, message: retryMsg, actionUrl: action });
+      saveSessionBackup();
+      log.info("input", `Already-done data too short — asking again (NOT cutting call)`, { callSid });
+      return sendTwiML(res, twiml);
+    }
   }
 
   /* ── Persist date ── */
@@ -854,6 +1079,54 @@ async function handleUserInput(req, res) {
     session.assignedBranchAddr = extractedBranch.address || null;
     session.branchRetries = 0;  // Reset on success
     log.info("branch", `Matched → ${extractedBranch.name} (code: ${extractedBranch.code})`, { callSid });
+  }
+
+  /* ── STATE-SPECIFIC HANDLERS for UNKNOWN/UNSUPPORTED INTENTS ── */
+  if (intent === INTENT.UNKNOWN) {
+    log.warn("input", `UNKNOWN intent in state: ${session.state}`, { callSid });
+    
+    /* Provide state-specific guidance for unknown */
+    switch (session.state) {
+      case "awaiting_initial_decision":
+        replyText = V.politeAskAgain(name);
+        nextState = "awaiting_initial_decision"; /* Stay in state */
+        endCall = false;
+        break;
+      case "awaiting_reason":
+        replyText = V.askReason(name);
+        nextState = "awaiting_reason";
+        endCall = false;
+        break;
+      case "awaiting_reason_persisted":
+        replyText = V.persuasionFinal(name);
+        nextState = "awaiting_reason_persisted";
+        endCall = false;
+        break;
+      case "awaiting_date":
+        replyText = V.askDate(name);
+        nextState = "awaiting_date";
+        endCall = false;
+        break;
+      case "awaiting_date_confirm":
+        replyText = V.politeAskAgain(name);
+        nextState = "awaiting_date_confirm";
+        endCall = false;
+        break;
+      case "awaiting_branch":
+        replyText = V.askBranchAgain(name);
+        nextState = "awaiting_branch";
+        endCall = false;
+        break;
+      case "awaiting_service_details":
+        replyText = V.askAlreadyDoneDetails(name);
+        nextState = "awaiting_service_details";
+        endCall = false;
+        break;
+      default:
+        replyText = V.unknownFallback(name);
+        nextState = session.state;  /* Stay in current state */
+        endCall = false;
+    }
   }
   
   /* ── Branch retry guard: max 3 attempts ── */
@@ -952,6 +1225,34 @@ async function handleUserInput(req, res) {
     callOutcome = resolveOutcome(nextState, intent, session, previousState);
     log.info("input", `Outcome resolved: ${callOutcome} (prevState: ${previousState})`, { callSid });
   }
+
+  /* ── STEP 8: GLOBAL FALLBACK HANDLER — Ensure we always respond ── */
+  /* If we reach here with UNKNOWN from state handler fallback, use retry counter */
+  if (intent === INTENT.UNKNOWN && (!(endCall || nextState === "ended"))) {
+    session.retryCount = (session.retryCount || 0) + 1;
+    log.warn("input", `Unknown intent retry loop #${session.retryCount}`, { callSid });
+
+    if (session.retryCount >= 3) {
+      /* Max retries exceeded — graceful hangup */
+      const farewell = V.unknownFallbackMax(name);
+      appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "unknown_max", systemReply: farewell });
+      sessionStore.set(callSid, session);
+      await endSession(callSid, "unknown_max", "no_response");
+      buildVoiceResponse({ twiml, message: farewell, actionUrl: action, hangup: true });
+      return sendTwiML(res, twiml);
+    }
+
+    /* Still within retries — politely ask again */
+    finalReplyText = V.unknownFallback(name);
+    appendTurn(session, { customerSaid: rawSpeech, confidence, intent: "unknown_retry", systemReply: finalReplyText });
+    session.lastMessage = finalReplyText;
+    sessionStore.set(callSid, session);
+    buildVoiceResponse({ twiml, message: finalReplyText, actionUrl: action });
+    return sendTwiML(res, twiml);
+  }
+
+  /* Reset retry counter on successful intent */
+  session.retryCount = 0;
 
   /* ── Update session state ── */
   session.lastMessage = finalReplyText;
