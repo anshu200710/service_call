@@ -228,7 +228,7 @@ export function resolveDate(rawToken) {
     return makeResult(nextWeekday(1));
 
   /* ── अगले हफ्ते / next week → next Monday ── */
-  if (["अगले हफ्ते","अगले हफ़्ते","agle hafte","agle week","next week","agla hafta","agale hafte"].includes(t))
+  if (["अगले हफ्ते","अगले हफ़्ते","agle hafte","agle week","next week","agla hafta","agale hafte", "नेक्स्ट वीक!", "नेक्स्ट वी", "नेक्स्ट वीक", "वीक", "नेक्स्ट" ].includes(t))
     return makeResult(nextWeekday(1));
 
   /* ── अगले महीने / next month → 1st of next month ── */
