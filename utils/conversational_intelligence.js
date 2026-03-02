@@ -1,24 +1,39 @@
+/**
+ * conversational_intelligence.js  (v2 — Ultra-Robust Rural Hindi NLP)
+ *
+ * IMPROVEMENTS IN v2:
+ *  1. Smart repeat — replays last question with varied intro, not generic response
+ *  2. Confusion handling — fully absorbs confusion, explains purpose, asks smartly
+ *  3. Date understanding — massively expanded (see dateResolver.js v2)
+ *  4. Silence handling — delegated to voice.service.js (patience-mode)
+ *  5. Off-topic guard — redirects to last question clearly
+ *  6. Intent accuracy — pre-compiled regex + keyword boost
+ *  7. Branch matching — expanded phonetic map for rural STT errors
+ *  8. Date extraction — all Hindi/English variants, number words, phonetic
+ *  9. Comprehensive keyword tables for rural/Rajasthani/Bhojpuri/Marwari
+ */
+
 import { resolveDate } from "./dateResolver.js";
 
 /* =====================================================================
    INTENT ENUM
    ===================================================================== */
 export const INTENT = {
-  CONFIRM:             "confirm",
-  REJECT:              "reject",
-  ALREADY_DONE:        "already_done",
-  DRIVER_NOT_AVAILABLE:"driver_not_available",
-  MACHINE_BUSY:        "machine_busy",
-  WORKING_FINE:        "working_fine",
-  MONEY_ISSUE:         "money_issue",
-  CALL_LATER:          "call_later",
-  PROVIDE_DATE:        "provide_date",
-  PROVIDE_BRANCH:      "provide_branch",
-  RESCHEDULE:          "reschedule",
-  REPEAT:              "repeat",
-  CONFUSION:           "confusion",
-  UNCLEAR:             "unclear",
-  UNKNOWN:             "unknown",
+  CONFIRM:              "confirm",
+  REJECT:               "reject",
+  ALREADY_DONE:         "already_done",
+  DRIVER_NOT_AVAILABLE: "driver_not_available",
+  MACHINE_BUSY:         "machine_busy",
+  WORKING_FINE:         "working_fine",
+  MONEY_ISSUE:          "money_issue",
+  CALL_LATER:           "call_later",
+  PROVIDE_DATE:         "provide_date",
+  PROVIDE_BRANCH:       "provide_branch",
+  RESCHEDULE:           "reschedule",
+  REPEAT:               "repeat",
+  CONFUSION:            "confusion",
+  UNCLEAR:              "unclear",
+  UNKNOWN:              "unknown",
 };
 
 /* =====================================================================
@@ -68,40 +83,81 @@ function normalise(raw) {
 }
 
 /* =====================================================================
-   HINDI CITY NAME MAP  (expanded with Rajasthani / alternate STT variants)
+   HINDI CITY NAME MAP — Expanded with phonetic/rural STT variants
    ===================================================================== */
 const HINDI_CITY_MAP = {
-  अजमेर:"ajmer",    अजमेरा:"ajmer",	अजेमेर:"ajmer",
-  अलवर:"alwar",     अलावर:"alwar",	अलबर:"alwar",	अलुवर:"alwar",
-  बांसवाड़ा:"banswara", बाँसवाड़ा:"banswara", बासवाड़ा:"banswara", बांसवाड़:"banswara",
-  भरतपुर:"bharatpur",  भारतपुर:"bharatpur", भरतपूर:"bharatpur",
-  भीलवाड़ा:"bhilwara", भिलवाड़ा:"bhilwara", भिलवारा:"bhilwara", भीलवाड़:"bhilwara", भिलबाड़:"bhilwara",
-  भिवाड़ी:"bhiwadi",  भीवाड़ी:"bhiwadi",  भिवादी:"bhiwadi", भिवाडी:"bhiwadi",
-  दौसा:"dausa",     दावसा:"dausa",	दौशा:"dausa",	दाउसा:"dausa",
-  धौलपुर:"dholpur", धोलपुर:"dholpur", धोलपूर:"dholpur", डौलपुर:"dholpur",
-  डूंगरपुर:"dungarpur", डुंगरपुर:"dungarpur", दुंगरपुर:"dungarpur", दूंगरपुर:"dungarpur", डूंगरपूर:"dungarpur",
-  "गोनेर रोड":"goner road", गोनर:"goner", गोनेर:"goner",
-  जयपुर:"jaipur",   जेपुर:"jaipur",    जैपुर:"jaipur", जयपूर:"jaipur",
-  झालावाड़:"jhalawar", "झाला वाड़":"jhalawar", झालवाड़:"jhalawar", झालवाड:"jhalawar",
-  झुंझुनू:"jhunjhunu", झुंझुनु:"jhunjhunu", झुझुनू:"jhunjhunu", झुजुनु:"jhunjhunu",
-  करौली:"karauli",  करोली:"karauli", करौलि:"karauli",
-  केकड़ी:"kekri",   केकरी:"kekri", काकरी:"kekri", केकरा:"kekri",
-  कोटा:"kota",      कोट:"kota", कोटा:"kota",
-  कोटपूतली:"kotputli", कोटपुतली:"kotputli",
-  "नीम का थाना":"neem ka thana", नीम:"neem", नीमकाथाना:"neem ka thana",
-  निम्बाहेड़ा:"nimbahera", निंबाहेड़ा:"nimbahera", निंबहेड़ा:"nimbahera",
-  प्रतापगढ़:"pratapgarh", प्रतापगड़:"pratapgarh", प्रतापगड:"pratapgarh",
-  राजसमंद:"rajsamand", राजसमन्द:"rajsamand", राजसमंध:"rajsamand",
-  रामगंजमंडी:"ramganjmandi", "रामगंज मंडी":"ramganjmandi", रामगंजमंडि:"ramganjmandi",
-  सीकर:"sikar",     सिकर:"sikar", सीकार:"sikar",
-  सुजानगढ़:"sujangarh", सुजानगड़:"sujangarh", सुजानगड:"sujangarh",
-  टोंक:"tonk", टोङ्क:"tonk", तोंक:"tonk",
-  उदयपुर:"udaipur", उदैपुर:"udaipur", उदपुर:"udaipur", उदयपूर:"udaipur",
-  वीकेआईए:"vkia", वीके:"vkia",
+  // Ajmer
+  अजमेर:"ajmer", अजमेरा:"ajmer", अजमीर:"ajmer", ajmeer:"ajmer", ajmir:"ajmer",
+  // Alwar
+  अलवर:"alwar", अलावर:"alwar", अलवार:"alwar", alavar:"alwar", alvar:"alwar",
+  // Banswara
+  बांसवाड़ा:"banswara", बाँसवाड़ा:"banswara", बासवाड़ा:"banswara",
+  baaswara:"banswara", banswada:"banswara", banswaada:"banswara",
+  // Bharatpur
+  भरतपुर:"bharatpur", भारतपुर:"bharatpur", bharatpoor:"bharatpur", bharatpur:"bharatpur",
+  // Bhilwara
+  भीलवाड़ा:"bhilwara", भिलवाड़ा:"bhilwara", भिलवारा:"bhilwara",
+  bhilvaada:"bhilwara", bhilvada:"bhilwara", bhilwada:"bhilwara",
+  // Bhiwadi
+  भिवाड़ी:"bhiwadi", भीवाड़ी:"bhiwadi", भिवादी:"bhiwadi",
+  bhivadi:"bhiwadi", bhiwari:"bhiwadi",
+  // Dausa
+  दौसा:"dausa", दावसा:"dausa", daosa:"dausa", dawsa:"dausa", daawsa:"dausa",
+  // Dholpur
+  धौलपुर:"dholpur", धोलपुर:"dholpur", dhaolpur:"dholpur", dhaulpur:"dholpur",
+  // Dungarpur
+  डूंगरपुर:"dungarpur", डुंगरपुर:"dungarpur", दुंगरपुर:"dungarpur",
+  dungarpoor:"dungarpur", dungarpura:"dungarpur",
+  // Goner Road
+  "गोनेर रोड":"goner road", "गोनेर":"goner road", goner:"goner road",
+  // Jaipur
+  जयपुर:"jaipur", जेपुर:"jaipur", जैपुर:"jaipur",
+  jaypoor:"jaipur", jaypur:"jaipur", jaipur:"jaipur",
+  // Jhalawar
+  झालावाड़:"jhalawar", "झाला वाड़":"jhalawar",
+  jhaalawar:"jhalawar", jhalabar:"jhalawar",
+  // Jhunjhunu
+  झुंझुनू:"jhunjhunu", झुंझुनु:"jhunjhunu", झुझुनू:"jhunjhunu",
+  jhujhunu:"jhunjhunu", jhunjunu:"jhunjhunu", jhujhunoo:"jhunjhunu",
+  // Karauli
+  करौली:"karauli", करोली:"karauli", karouli:"karauli", karaoli:"karauli",
+  // Kekri
+  केकड़ी:"kekri", केकरी:"kekri", kekadee:"kekri", kekadi:"kekri",
+  // Kota
+  कोटा:"kota", कोट:"kota", koota:"kota",
+  // Kotputli
+  कोटपूतली:"kotputli", kotpootli:"kotputli", kotputlee:"kotputli",
+  // Neem Ka Thana
+  "नीम का थाना":"neem ka thana", "नीम का थाना":"neem ka thana",
+  "neem ka thana":"neem ka thana", neemkathana:"neem ka thana",
+  neemka:"neem ka thana",
+  // Nimbahera
+  निम्बाहेड़ा:"nimbahera", निंबाहेड़ा:"nimbahera",
+  nimbaheда:"nimbahera", nimbhaira:"nimbahera",
+  // Pratapgarh
+  प्रतापगढ़:"pratapgarh", pratapgar:"pratapgarh", prataapgarh:"pratapgarh",
+  // Rajsamand
+  राजसमंद:"rajsamand", राजसमन्द:"rajsamand",
+  rajsamand:"rajsamand", rajsamund:"rajsamand",
+  // Ramganjmandi
+  रामगंजमंडी:"ramganjmandi", "रामगंज मंडी":"ramganjmandi",
+  ramganjmandi:"ramganjmandi", "ramganj mandi":"ramganjmandi",
+  ramganjmandee:"ramganjmandi",
+  // Sikar
+  सीकर:"sikar", सिकर:"sikar", seekar:"sikar", sikkar:"sikar",
+  // Sujangarh
+  सुजानगढ़:"sujangarh", sujaangarh:"sujangarh", soojangarh:"sujangarh",
+  // Tonk
+  टोंक:"tonk", tonk:"tonk",
+  // Udaipur
+  उदयपुर:"udaipur", उदैपुर:"udaipur",
+  udaypur:"udaipur", odaipur:"udaipur", udaipur:"udaipur",
+  // VKIA
+  वीकेआईए:"vkia", vkia:"vkia", "v k i a":"vkia",
 };
 
 /* =====================================================================
-   BRANCH MATCHER
+   BRANCH MATCHER — v2 with phonetic fuzzy support
    ===================================================================== */
 const SORTED_HINDI_ENTRIES = Object.entries(HINDI_CITY_MAP).sort(
   (a, b) => b[0].length - a[0].length
@@ -118,23 +174,56 @@ const BRANCH_CANDIDATES = SERVICE_CENTERS
   })
   .sort((a, b) => b.token.length - a.token.length);
 
-export function matchBranch(userText) {
-  if (!userText) return null;
-  let translated = userText;
-  for (const [hindi, latin] of SORTED_HINDI_ENTRIES) {
-    if (translated.includes(hindi)) translated = translated.replace(hindi, latin);
-  }
-  const norm = normalise(translated);
-  for (const { token, center } of BRANCH_CANDIDATES) {
-    if (token && norm.includes(token)) {
-      return {
-        code: center.branch_code,
-        name: center.branch_name,
-        city: center.city_name,
-        address: center.city_add,
-      };
+/**
+ * Levenshtein distance — for fuzzy city matching
+ */
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({length: m+1}, (_, i) => 
+    Array.from({length: n+1}, (_, j) => i === 0 ? j : j === 0 ? i : 0)
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i-1] === b[j-1]
+        ? dp[i-1][j-1]
+        : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
     }
   }
+  return dp[m][n];
+}
+
+export function matchBranch(userText) {
+  if (!userText) return null;
+
+  // Step 1: Translate Hindi city names to Latin
+  let translated = userText;
+  for (const [hindi, latin] of SORTED_HINDI_ENTRIES) {
+    if (translated.includes(hindi)) {
+      translated = translated.replace(new RegExp(hindi, "g"), latin);
+    }
+  }
+  const norm = normalise(translated);
+
+  // Step 2: Exact / substring match
+  for (const { token, center } of BRANCH_CANDIDATES) {
+    if (token && norm.includes(token)) {
+      return { code: center.branch_code, name: center.branch_name, city: center.city_name, address: center.city_add };
+    }
+  }
+
+  // Step 3: Fuzzy match — for STT mis-transcriptions (max edit distance 2 for short, 3 for long)
+  const words = norm.split(/\s+/);
+  for (const word of words) {
+    if (word.length < 3) continue;
+    for (const { token, center } of BRANCH_CANDIDATES) {
+      if (!token || token.length < 3) continue;
+      const maxDist = token.length <= 5 ? 1 : token.length <= 8 ? 2 : 3;
+      if (levenshtein(word, token) <= maxDist) {
+        return { code: center.branch_code, name: center.branch_name, city: center.city_name, address: center.city_add };
+      }
+    }
+  }
+
   return null;
 }
 
@@ -159,7 +248,6 @@ const SORTED_NUM_WORDS = Object.entries(HINDI_NUM_WORDS).sort(
 );
 
 function replaceHindiNumbers(text) {
-  if (!/[एकदोतीनचारपाँपांछहसातआठनौदस]|ek\b|do\b|teen\b|char\b|paanch/u.test(text)) return text;
   let out = text;
   for (const [word, digit] of SORTED_NUM_WORDS) {
     const re = new RegExp(`(^|\\s)${word}(\\s|$)`, "gu");
@@ -169,43 +257,81 @@ function replaceHindiNumbers(text) {
 }
 
 /* =====================================================================
-   DATE EXTRACTION
+   DATE EXTRACTION — v2 Ultra-Comprehensive
    ===================================================================== */
 const MONTH_NAMES_PATTERN =
   "january|february|march|april|may|june|july|august|september|october|november|december" +
+  "|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec" +
+  "|janvari|janwari|farvari|farwari|feburary|maarch|aprel|aipril|joon|julaai|julai|agast|agust" +
+  "|sitambar|saptambar|aktubar|aktoobar|navambar|disambar|disember" +
   "|जनवरी|फरवरी|मार्च|अप्रैल|मई|जून|जुलाई|अगस्त|सितंबर|अक्टूबर|नवंबर|दिसंबर";
 
-const HINDI_MONTH_MAP = {
+const MONTH_NORMALISE = {
   january:"जनवरी",february:"फरवरी",march:"मार्च",april:"अप्रैल",
   may:"मई",june:"जून",july:"जुलाई",august:"अगस्त",
   september:"सितंबर",october:"अक्टूबर",november:"नवंबर",december:"दिसंबर",
+  jan:"जनवरी",feb:"फरवरी",mar:"मार्च",apr:"अप्रैल",jun:"जून",
+  jul:"जुलाई",aug:"अगस्त",sep:"सितंबर",oct:"अक्टूबर",nov:"नवंबर",dec:"दिसंबर",
+  janvari:"जनवरी",janwari:"जनवरी",farvari:"फरवरी",farwari:"फरवरी",
+  feburary:"फरवरी",maarch:"मार्च",aprel:"अप्रैल",aipril:"अप्रैल",
+  joon:"जून",julaai:"जुलाई",julai:"जुलाई",agast:"अगस्त",agust:"अगस्त",
+  sitambar:"सितंबर",saptambar:"सितंबर",aktubar:"अक्टूबर",aktoobar:"अक्टूबर",
+  navambar:"नवंबर",disambar:"दिसंबर",disember:"दिसंबर",
   जनवरी:"जनवरी",फरवरी:"फरवरी",मार्च:"मार्च",अप्रैल:"अप्रैल",मई:"मई",
   जून:"जून",जुलाई:"जुलाई",अगस्त:"अगस्त",सितंबर:"सितंबर",
   अक्टूबर:"अक्टूबर",नवंबर:"नवंबर",दिसंबर:"दिसंबर",
 };
 
+// Expanded day label map with all variants
 const DAY_LABEL_MAP = {
-  kal:"कल", parso:"परसों",
-  agle:"अगले","agle hi":"अगले",next:"अगले",asap:"अगले",
+  // Tomorrow variants
+  kal:"कल", kall:"कल", "kal hi":"कल", "kal hee":"कल",
+  // Day after tomorrow
+  parso:"परसों", parson:"परसों", parsu:"परसों", "parso hi":"परसों",
+  // Three days later
+  tarso:"तरसों", tarson:"तरसों",
+  // Next/Soon
+  agle:"अगले", "agle hi":"अगले", next:"अगले", asap:"अगले", agla:"अगले", agale:"अगले",
+  jaldi:"अगले", "jaldi se":"अगले",
+  // Next week
   "agle hafte":"अगले हफ्ते","agle week":"अगले हफ्ते","next week":"अगले हफ्ते",
-  "agle mahine":"अगले महीने","next month":"अगले महीने",
+  "is hafte":"अगले हफ्ते","is week":"अगले हफ्ते","this week":"अगले हफ्ते",
+  "agla hafta":"अगले हफ्ते",
+  // Next month
+  "agle mahine":"अगले महीने","next month":"अगले महीने","agla mahina":"अगले महीने",
+  "agle maheene":"अगले महीने",
+  // N days later
   "do din baad":"2 दिन बाद","teen din baad":"3 दिन बाद","ek hafte baad":"1 हफ्ते बाद",
+  "char din baad":"4 दिन बाद","paanch din baad":"5 दिन बाद",
+  // Weekdays — English
   monday:"सोमवार",tuesday:"मंगलवार",wednesday:"बुधवार",
   thursday:"गुरुवार",friday:"शुक्रवार",saturday:"शनिवार",sunday:"रविवार",
   mon:"सोमवार",tue:"मंगलवार",wed:"बुधवार",thu:"गुरुवार",
   fri:"शुक्रवार",sat:"शनिवार",sun:"रविवार",
-  somwar:"सोमवार",mangalwar:"मंगलवार",budhwar:"बुधवार",
-  guruwar:"गुरुवार",shukrawar:"शुक्रवार",shaniwar:"शनिवार",raviwar:"रविवार",
-  कल:"कल",परसों:"परसों",
-  सोमवार:"सोमवार",समवार:"सोमवार",
-  मंगलवार:"मंगलवार",मंगल:"मंगलवार",
-  बुधवार:"बुधवार",बुध:"बुधवार",
-  गुरुवार:"गुरुवार",गुरु:"गुरुवार",
-  शुक्रवार:"शुक्रवार",शुक्र:"शुक्रवार",
-  शनिवार:"शनिवार",शनि:"शनिवार",
-  रविवार:"रविवार",रवि:"रविवार",
+  // Weekdays — Hinglish
+  somwar:"सोमवार", somvaar:"सोमवार", somvar:"सोमवार", samvar:"सोमवार", saamvar:"सोमवार",
+  mangalwar:"मंगलवार", mangalvaar:"मंगलवार", mangalvar:"मंगलवार", mangal:"मंगलवार",
+  budhwar:"बुधवार", budhvaar:"बुधवार", budhvar:"बुधवार", budh:"बुधवार", budhawar:"बुधवार",
+  guruwar:"गुरुवार", guruvaar:"गुरुवार", guruvar:"गुरुवार", guru:"गुरुवार",
+  veervar:"गुरुवार", brihaspatiwar:"गुरुवार",
+  shukrawar:"शुक्रवार", shukravaar:"शुक्रवार", shukravar:"शुक्रवार", shukra:"शुक्रवार",
+  shaniwar:"शनिवार", shanivaar:"शनिवार", shanivar:"शनिवार", shani:"शनिवार", shanichhar:"शनिवार",
+  raviwar:"रविवार", ravivaar:"रविवार", ravivar:"रविवार", ravi:"रविवार",
+  itwar:"रविवार", itwaar:"रविवार", aithvar:"रविवार", aitvar:"रविवार",
+  // Weekdays — Devanagari
+  कल:"कल",परसों:"परसों",परसो:"परसों",
+  सोमवार:"सोमवार",समवार:"सोमवार",सोमवर:"सोमवार",
+  मंगलवार:"मंगलवार",मंगलवर:"मंगलवार",मंगल:"मंगलवार",
+  बुधवार:"बुधवार",बुधवर:"बुधवार",बुध:"बुधवार",
+  गुरुवार:"गुरुवार",गुरुवर:"गुरुवार",गुरु:"गुरुवार",वीरवार:"गुरुवार",
+  शुक्रवार:"शुक्रवार",शुक्रवर:"शुक्रवार",शुक्र:"शुक्रवार",
+  शनिवार:"शनिवार",शनिवर:"शनिवार",शनि:"शनिवार",शनीवार:"शनिवार",
+  रविवार:"रविवार",रविवर:"रविवार",रवि:"रविवार",इतवार:"रविवार",ऐतवार:"रविवार",
   अगले:"अगले","अगले ही":"अगले",
   "अगले हफ्ते":"अगले हफ्ते","अगले महीने":"अगले महीने",
+  // Today
+  aaj:"कल", today:"कल", "aaj hi":"कल",
+  आज:"कल",
 };
 
 const SORTED_DAY_KEYS = Object.keys(DAY_LABEL_MAP).sort((a, b) => b.length - a.length);
@@ -219,23 +345,31 @@ export function extractPreferredDate(raw) {
   const numSlash = t.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-]\d{2,4})?\b/);
   if (numSlash) return `${numSlash[1]}/${numSlash[2]}`;
 
-  // "25 january" or "25 जनवरी"
+  // "25 january" or "25 जनवरी" or "25 janwari"
   const dayMonthRe = new RegExp(`\\b(\\d{1,2})\\s+(${MONTH_NAMES_PATTERN})\\b`, "u");
   const dayMonth   = t.match(dayMonthRe);
-  if (dayMonth) return `${dayMonth[1]} ${HINDI_MONTH_MAP[dayMonth[2]] || dayMonth[2]}`;
+  if (dayMonth) return `${dayMonth[1]} ${MONTH_NORMALISE[dayMonth[2]] || dayMonth[2]}`;
 
-  // "25 tarikh" / "25 तारीख"
-  const numBefore = t.match(/(?:^|\s)(\d{1,2})\s+(?:तारीख|tarikh|date)(?:\s|$|को|के)/u);
+  // "25 tarikh" / "25 तारीख" / "25 ko" / "25 th"
+  const numBefore = t.match(/(?:^|\s)(\d{1,2})\s+(?:तारीख|tarikh|tarik|date|th|st|nd|rd|ko|के\s*लिए)(?:\s|$)/u);
   if (numBefore) return `${numBefore[1]} तारीख`;
-  const numAfter  = t.match(/(?:तारीख|tarikh|date)\s+(\d{1,2})(?:\s|$)/u);
+  const numAfter  = t.match(/(?:तारीख|tarikh|tarik|date)\s+(\d{1,2})(?:\s|$)/u);
   if (numAfter)  return `${numAfter[1]} तारीख`;
   const numKo     = t.match(/(?:^|\s)(\d{1,2})\s+(?:ko|को)(?:\s|$)/u);
   if (numKo)     return `${numKo[1]} तारीख`;
   const bookCtx   = t.match(/\b(\d{1,2})\s+(?:ke\s+liye|को\s+बुक|तक|से\s+पहले)/);
   if (bookCtx)   return `${bookCtx[1]} तारीख`;
 
-  // Hindi weekday names (Devanagari)
-  const hindiWDPat = /(?:^|\s)(सोमवार|समवार|मंगलवार|मंगल|बुधवार|बुध|गुरुवार|गुरु|शुक्रवार|शुक्र|शनिवार|शनि|रविवार|रवि)(?:\s|$)/u;
+  // "N din baad" patterns
+  const dinBaadMatch = t.match(/(\d+)\s*(?:दिन\s*बाद|din\s*baad|days?\s*(?:later|bad|baad))/u);
+  if (dinBaadMatch) return `${dinBaadMatch[1]} दिन बाद`;
+
+  // "N hafte baad"
+  const hafteBaadMatch = t.match(/(\d+)\s*(?:हफ्ते?\s*बाद|hafte?\s*baad|weeks?\s*(?:later|bad|baad))/u);
+  if (hafteBaadMatch) return `${hafteBaadMatch[1]} हफ्ते बाद`;
+
+  // Devanagari weekday
+  const hindiWDPat = /(?:^|\s)(सोमवार|समवार|सोमवर|मंगलवार|मंगलवर|मंगल|बुधवार|बुधवर|बुध|गुरुवार|गुरुवर|गुरु|वीरवार|शुक्रवार|शुक्रवर|शुक्र|शनिवार|शनिवर|शनि|शनीवार|रविवार|रविवर|रवि|इतवार|ऐतवार)(?:\s|$)/u;
   const hindiWD    = t.match(hindiWDPat);
   if (hindiWD) return DAY_LABEL_MAP[hindiWD[1]] || hindiWD[1];
 
@@ -263,86 +397,83 @@ export function extractPreferredDate(raw) {
 }
 
 /* =====================================================================
-   KEYWORD PATTERN TABLES
+   KEYWORD PATTERN TABLES — v2 Massively Expanded
    ===================================================================== */
 
-/* ── REPEAT ── */
+/* ── REPEAT — "samjh nahi", "dobara bolo", noise/network issues ── */
 const REPEAT_PATTERNS = [
-  // Hinglish
+  // Hinglish — didn't hear
   "dobara boliye","dobara bolo","dobara bol","phir se boliye","phir se bolo",
-  "fir se bolo","fir boliye","ek baar aur","ek baar dobara",
-  "kya kaha","kya kaha aapne","kya bola","kya bole","kya bol raha",
-  "suna nahi","suna nahi aapka","sunai nahi diya","sunai nahi",
-  "awaz nahi aayi","awaz nahi","awaz kam hai","awaaz nahi",
-  "samjha nahi","samjhi nahi","samajh nahi aaya","samajh nahi",
-  "nahi samjha","nahi samjhi","kuch nahi suna","kuch suna nahi",
+  "fir se bolo","fir boliye","ek baar aur","ek baar dobara","ek aur baar",
+  "kya kaha","kya kaha aapne","kya bola","kya bole","kya bol raha","kya bol rahi",
+  "suna nahi","suna nahi aapka","sunai nahi diya","sunai nahi","nahi suna",
+  "awaz nahi aayi","awaz nahi","awaz kam hai","awaaz nahi","awaaz nahi aayi",
+  "samjha nahi","samjhi nahi","samajh nahi aaya","samajh nahi","nahi samjha",
+  "nahi samjhi","kuch nahi suna","kuch samajh nahi aaya",
   "door se bol rahe","network problem","network kharab","call cut",
   "dheere boliye","dheere bolo","thoda dheere","slowly boliye",
-  "jaldi mat boliye","clear nahi tha","clear nahi","saaf boliye","spasht boliye",
-  "thoda loud boliye","aur loud","thoda tez boliye","tez boliye",
-  "repeat karo","repeat karein","repeat please","say again","again","once more",
-  "kya tha number","number kya tha","address kya tha","kya kuch kaha",
+  "jaldi mat boliye","clear nahi tha","clear nahi",
+  "thoda loud boliye","aur loud","thoda tez boliye",
+  "repeat karo","repeat karein","repeat please","say again",
+  "kya tha number","number kya tha","address kya tha",
   "mujhe nahi suna","yeh kya tha","line kharab hai","connection kharab",
-  "voice clear nahi","baat samajh nahi","awaak tez karo","taliyaan ayi","network issue",
+  "ji kya","kya ji","kya bola aapne","kya farmaya","kya kah rahi",
+  "pehle wali baat","phir batao","phir bataiye","wahi batao",
+  "thoda aur boliye","thoda saaf","saaf nahi tha","saaf nahi aayi",
   // English
-  "repeat","come again","excuse me","pardon","what","huh","eh","sorry",
-  "could not hear","did not hear","cant hear","didn't hear","can not hear",
-  "please repeat","can you repeat","please say again","say that again",
-  "speak slowly","slow down","too fast","what was that","that was","once again",
-  "can't hear you","cannot hear", "didn't catch", "didn't catch that",
+  "repeat","come again","excuse me","pardon","what","huh",
+  "could not hear","did not hear","cant hear","cannot hear",
+  "please repeat","can you repeat","please say again",
+  "speak slowly","slow down","too fast","what was that","say that again",
   // Devanagari
   "दोबारा बोलो","दोबारा बोलिए","फिर से बोलो","फिर से बोलिए","एक बार और",
   "क्या कहा","क्या बोले","नहीं सुना","आवाज़ नहीं","धीरे बोलिए","साफ बोलिए",
   "समझ नहीं","समझ नहीं आया","नहीं समझा","कुछ नहीं सुना","मैं सुना नहीं",
-  "नेटवर्क खराब","कॉल कट","दूर लगा","साफ़ नहीं था","एक बार फिर से",
-  "स्पष्ट बोलिए","तेज़ बोलिए","फिर कहो","दोबारा कहो","ठीक से सुनाई नहीं",
+  "नेटवर्क खराब","कॉल कट","दूर लगा","साफ़ नहीं था","फिर बताइए",
+  "क्या बोला","क्या कह रही हो","जी क्या","क्या जी",
+  // Rural / Rajasthani
+  "kya farmayo","kya batayo","samjhayo phir","phir batayo",
+  "suno suno","ke bole","ke kaha",
 ];
 
-/* ── CONFUSION — greatly expanded ── */
+/* ── CONFUSION — greatly expanded with rural patterns ── */
 const CONFUSION_PATTERNS = [
   // Identity / wrong machine
   "kaunsi machine","konsi machine","kaun si machine","kaunsa service",
   "meri machine nahi","galat machine","galat number","yeh meri nahi",
-  "yeh kiska number hai","kiski machine","kon sa number","meri nahi hai",
-  "mujhe nahi pehchana","yeh kya number hai","kaunsa model","kaun si model",
-  "mere naam se kyun","mere naam pe","kaun bol raha","kon bol raha",
-  "kis company se","kaun si company","rajesh motors kya hai","kya hai yeh kumpni",
-  // Not understanding what is being asked
+  "yeh kiska number hai","kiski machine","kon sa number","kaunsa model",
+  "mere naam se kyun","mere naam pe","kaun bol raha","kaun bol rahi",
+  "kis company se","kaun si company","rajesh motors kya hai",
+  "kaunsa rajesh","rajesh motors kaun","rajesh kaun",
+  // Not understanding
   "samajh nahi aaya","nahi samjha","nahi samjhi","kya matlab","kya bol rahe",
-  "kya pooch rahe ho","kya pooch rahi ho","kya hai yeh","kon hai","kaunsa",
-  "kaun bol raha","galat call","wrong number","mujhe nahi pata","mujhe pata nahi",
-  "samajh nahi","kuch samajh nahi aaya","kya puchh raha hai","kya puch rahe",
-  "kya bolunga","kya bolun","kya bolun main","kya kahen","kya kahu",
-  "thoda explain karo","explain karein","thoda batao","batao na","explain kare",
-  "naya customer hu","pahli baar call kar raha","pehli baar call","pehli call hai",
-  "guide karo","samajhao","samjha do","batao na","batao bhai",
-  "procedure kya hai","kaise kaam hota hai","ye kya hai",
-  "salaam","namaskar","kaise ho","tum kon ho","phone kiske pas hai",
-  "yeh kaunsa number","main kaun hoon","tum ho kaun","kya koi problem hai",
-  "kya zaroorat hai","kya chahiye aapko","kya bolna hai","kya karna hai",
-  // Rural/dialectal confusion words
-  "aa","ae","ae bhai","sun","suno","suna","dekho","dekh",
-  "haan to","haan par","par kya","kya par","kya bolte ho",
-  "theek hai par","par theek nahi","ache","bas","bas kar","khatam karo",
-  "gadbad hai","ulta pulta bol rahi ho","gumaan kya hai",
-  // Tamil/Marathi/Punjabi accents
-  "what only","super","fine only","good only","ok only",
-  // General confusion in Hindi
+  "kya pooch rahe ho","kya pooch rahi ho","kya hai yeh","kon hai",
+  "kaun bol raha","galat call","wrong number","mujhe nahi pata",
+  "samajh nahi","kuch samajh nahi aaya","kya puchh raha hai",
+  "kya bolunga","kya bolun","kya kahen","kya kahu",
+  "thoda explain karo","explain karein","thoda batao",
+  "naya customer hu","pahli baar call kar raha","pehli baar call",
+  "guide karo","samajhao","batao na","procedure kya hai",
+  "kis cheez ki baat","kya chahiye aapko","kya hua",
+  "phone kyun aaya","call kyun","kyun call kiya",
+  "aapka number kahan se aaya","number kahan se",
+  "machine ka number kya","kaunsa engine number",
+  // Hindi Devanagari
   "क्या","क्या मतलब","क्या मतलब है","क्या बोल रहे हो",
-  "मतलब क्या","मतलब बताओ","क्या पूछ रहे हो","क्या पूछ रही हो",
+  "मतलब क्या","मतलब बताओ","क्या पूछ रहे हो",
   "क्या चाहिए","क्या करना है","नहीं समझा","नहीं समझी",
-  "समझ नहीं","समझ नहीं आया","कुछ नहीं समझ आया","कुछ समझ नहीं",
-  "थोड़ा समझाओ","समझाओ","बताओ","गलत कॉल","गलत नंबर है",
-  "यह क्या है","मुझे नहीं पता","गाइड करो","समझा दो","समझा दीजिए",
+  "समझ नहीं","समझ नहीं आया","कुछ नहीं समझ आया",
+  "थोड़ा समझाओ","समझाओ","बताओ","गलत कॉल",
+  "यह क्या है","मुझे नहीं पता","गाइड करो","समझा दो",
   "कौन सी मशीन","गलत मशीन","गलत नंबर","यह मेरी नहीं",
-  "किस कंपनी से","कौन bol रहा","किसकी मशीन","मेरी नहीं","ये मेरी नहीं",
-  "आप कौन","आप कौन हो","कौन हो आप","मैं कौन हूँ","मेरा नाम","नाम बताओ",
-  // STT artifacts — single confused words / filler words
-  "huh","what","pardon","sorry","eh","hmm","mm","ah",
-  "aa","aaa","ooo","eee","hhh","ka","ki","kya",
+  "किस कंपनी से","किसकी मशीन","फोन क्यों आया","कॉल क्यों",
+  "क्यों कॉल किया","नंबर कहाँ से","आपका नंबर",
+  // Rural variants
+  "huh","what","pardon","sorry","theek se bolo","sahi se bolo",
+  "kya baat hai","kya maamla hai","kya chakkar hai",
 ];
 
-/* ── CONFIRM — comprehensive affirmatives ── */
+/* ── CONFIRM — all affirmatives including Rajasthani / Bhojpuri ── */
 const CONFIRM_PATTERNS = [
   // Strong explicit booking
   "haan ji bilkul","ji haan zaroor","bilkul theek hai",
@@ -356,34 +487,51 @@ const CONFIRM_PATTERNS = [
   "karwa dena","kardo","kar do","haan kar do","haan karo","haan haan karo",
   "acha kar do","acha karo","theek hai kar do","theek h kar do",
   "haan ek dum","ek dum theek","bilkul karo","zaroor karwao",
+  "karana hai","karwana padega","karna padega","karni hai",
+  "haan karna hai","bilkul karna hai","zaroor karna hai",
   // Marwari / Rajasthani
   "haan ji karo","kar do bhai","kar dena ji","theek karo",
-  "chhaal karo","chhalo karo",
+  "chhaal karo","chhalo karo","khamma ghani","khari baat","sahi baat",
+  "paka kar do","pakka","pakka kar do","haan pakka","pakka ji",
+  "le lo","book le lo","kar lo","karwa lo ji",
   // Bhojpuri
-  "haan ba","theek ba","kar dijiye na","kar do na",
+  "haan ba","theek ba","kar dijiye na","kar do na","haan ho","theek ho",
+  "kar da","kara da","karwaa da",
   // Generic affirmatives
   "haan ji","ji haan","ji ha","theek hai","theek h","thik hai",
   "bilkul","zaroor","sahi hai","acha","accha","achha","achcha",
   "haan","haa","han","ok","okay","yes","yep","done","perfect","hmm","confirm",
   "proceed","chalega","chalta hai","chalo","chalte hain","sahi","agreed","agree",
+  "ho jaye","ho jao","ho jaega","kar jaiye","kar jaao",
+  "schedule karo","fix karo","set karo","set kar do",
   // Devanagari
   "हाँ बुक करो","बुक कर दो","बुक करो","कन्फर्म करो","करवा दो","करवाओ",
   "ज़रूर करो","हाँ जी","जी हाँ","बिल्कुल","ज़रूर","ठीक है","सही है",
   "अच्छा","हाँ","हां","ओके","करवाना है","करना है","कर दो","कर दीजिए",
   "हाँ करो","बुक करवाना है","सर्विस करवाना है","कर लेंगे","कर देंगे",
+  "हो जाए","कर जाइए","पक्का","पक्का जी","हाँ पक्का",
 ];
 
-/* ── REJECT ── */
+/* ── REJECT — comprehensive ── */
 const REJECT_PATTERNS = [
   "nahi chahiye abhi","abhi nahi karna","nahi karna hai","nahi book karna",
   "book nahi karna","cancel kar do","nahi chahiye","nahi karna","mat karo",
   "mat kar","rehne do","rehne de","chhod do","band karo","zaroorat nahi",
   "need nahi","mat karna","abhi nahi","don't","dont","no","nope","cancel",
+  "nahi hoga","ho nahi payega","nahi ho sakta","nahi ho sakti",
+  "sambhav nahi","possible nahi","abhi possible nahi",
+  "nahi karna abhi","filhaal nahi","farz nahi","jaroorat nahi abhi",
+  "time nahi","waqt nahi abhi","baad mein dekhenge","dekhenge",
+  "sochna padega","soch ke batate hain","soch ke bataenge",
+  // Rajasthani
+  "na karo","na ji","na bhai","na hoga","na ho sakta",
+  "nahi re","nahi bhai","theek nahi lagta","man nahi",
+  // Hindi Devanagari
   "नहीं चाहिए","नहीं करना","मत करो","मत कर","छोड़ दो","बंद करो",
-  "ज़रूरत नहीं","अभी नहीं","कैंसल कर दो","ना",
-  "koi tarikh nahi","koi date nahi","abhi koi date nahi",
-  "date nahi dunga","tarikh nahi bataunga","koi bhi tarikh nahi",
+  "ज़रूरत नहीं","अभी नहीं","कैंसल कर दो","ना","नहीं होगा",
+  "नहीं हो सकता","नहीं हो सकती","संभव नहीं","फिलहाल नहीं",
   "कोई भी तारीख नहीं","कोई तारीख नहीं","तारीख नहीं दूंगा","कोई दिन नहीं",
+  "सोचना पड़ेगा","सोच के बताते हैं","देखेंगे",
 ];
 
 /* ── ALREADY DONE ── */
@@ -392,9 +540,17 @@ const ALREADY_DONE_PATTERNS = [
   "pehle karwa li","already karwa li","already ho gayi","service ho gayi",
   "service karwa chuke","service karwa li","karwa di hai","kar di hai",
   "serviced","already done","already serviced","done hai","ho gayi","karwa li",
-  "karwa chuke hain","service ho chuki",
+  "karwa chuke hain","service ho chuki","nipta liya","nipta di","nipat gayi",
+  "ho gayi thi","ho chuki thi","karwa chuke the","kar chuke hain",
+  "khud kiya tha","local se karwai","doosri jagah se","bahar se karwai",
+  "pehle se karwai","pehle hi karwa li","pehle service","service pehle",
+  // Rajasthani
+  "kar liya","karwa liya","kar li","karwa li bhai",
+  "ho gayo","kar lyo","karwa lyo",
+  // Hindi Devanagari
   "पहले करवा ली","पहले करवाई","पहले हो गई","हो चुकी","पहले ही करवा ली",
-  "कर दी","करवा दी","हो गई है","पहले की",
+  "कर दी","करवा दी","हो गई है","पहले की","पहले से करवाई",
+  "निपट गई","हो चुकी थी","कर चुके हैं",
 ];
 
 /* ── DRIVER NOT AVAILABLE ── */
@@ -402,20 +558,18 @@ const DRIVER_NOT_AVAILABLE_PATTERNS = [
   "driver nahi hai","driver available nahi","driver chutti par","driver gaya hua",
   "driver nahi","koi driver nahi","operator nahi","operator available nahi",
   "chalane wala nahi","driver busy","driver nahi milega","driver nahi aa raha",
+  "driver ki chutti","driver bahar hai","driver shaher mein nahi",
+  "operator ki chutti","operator nahi hai","machine chalane wala nahi",
+  "driver maujood nahi","driver nahi milta",
+  // Hindi Devanagari
   "ड्राइवर नहीं","ड्राइवर उपलब्ध नहीं","ड्राइवर छुट्टी","ऑपरेटर नहीं",
-  "ड्राइवर है नहीं","मेरे ड्राइवर नहीं","चालक नहीं",
+  "ड्राइवर है नहीं","मेरे ड्राइवर नहीं","चालक नहीं","ड्राइवर बाहर",
 ];
 
 function hasDriverNotAvailableKeywords(text) {
   const hasDriver = /driver|ड्राइवर|चालक|operator|ऑपरेटर/i.test(text);
-  const hasNot    = /nahi|नहीं|ना|उपलब्ध नहीं|available nahi/i.test(text);
+  const hasNot    = /nahi|नहीं|ना|उपलब्ध नहीं|available nahi|chutti|छुट्टी/i.test(text);
   return hasDriver && hasNot;
-}
-
-/* ── OFF-TOPIC DETECTOR ── */
-export function isOffTopic(text) {
-  if (!text) return false;
-  return OFF_TOPIC_RE.test(normalise(text));
 }
 
 /* ── MACHINE BUSY ── */
@@ -424,7 +578,12 @@ const MACHINE_BUSY_PATTERNS = [
   "kaam chal raha","project chal raha","site pe hai","machine busy hai",
   "chal rahi hai abhi","kaam me lagi hai","nikali nahi ja sakti",
   "rok nahi sakte","nikal nahi sakti","machine site pe","site par hai",
+  "contract mein hai","kaam pe lagi","maal dho rahi","kaam kar rahi",
+  "nikalwana mushkil hai","bahar gai hui hai","machine available nahi",
+  "machine bhejana mushkil","machine ruk nahi sakti",
+  // Hindi Devanagari
   "मशीन चल रही","साइट पर है","काम चल रहा","मशीन बिज़ी","काम में लगी",
+  "कॉन्ट्रैक्ट में है","नहीं निकाल सकते","मशीन उपलब्ध नहीं",
 ];
 
 /* ── WORKING FINE ── */
@@ -432,7 +591,12 @@ const WORKING_FINE_PATTERNS = [
   "machine thik hai","machine sahi hai","koi problem nahi","chalti rehti hai",
   "theek chal rahi","abhi thik hai","koi dikkat nahi","service ki zaroorat nahi",
   "sab theek hai","koi issue nahi","machine kharab nahi","breakdown nahi",
-  "मशीन ठीक है","कोई दिक्कत नहीं","ठीक चल रही","सब ठीक है",
+  "abhi koi takleef nahi","bilkul sahi hai","perfectly chal rahi",
+  "koi kharabi nahi","khud dekh liya","theek kar liya",
+  "local mechanic se theek karwa li","theek ho gayi",
+  // Hindi Devanagari
+  "मशीन ठीक है","कोई दिक्कत नहीं","ठीक चल रही","सब ठीक है","कोई समस्या नहीं",
+  "बिल्कुल सही है","कोई खराबी नहीं",
 ];
 
 /* ── MONEY ISSUE ── */
@@ -440,7 +604,12 @@ const MONEY_ISSUE_PATTERNS = [
   "paisa nahi","paise nahi","budget nahi","abhi paisa nahi","funding nahi",
   "payment nahi","mehnga hai","afford nahi","payment problem","funds nahi",
   "rakh nahi sakta","mahanga","paisa khatam","thoda paisa nahi",
+  "abhi kharcha nahi kar sakta","paise ki dikkat","paisa rok ke rakhna hai",
+  "paise nahi hain abhi","paise ki kami","payment baad mein",
+  "ek baar paisa aajaye","paise milte hi","bill zyada hai",
+  // Hindi Devanagari
   "पैसा नहीं","पैसे नहीं","बजट नहीं","महंगा है","अभी पैसे नहीं","फंड नहीं",
+  "पैसों की दिक्कत","खर्च नहीं कर सकते","पैसे कम हैं",
 ];
 
 /* ── CALL LATER ── */
@@ -450,33 +619,20 @@ const CALL_LATER_PATTERNS = [
   "meeting mein hoon","thodi der baad","kuch time baad","later karo",
   "call back karo","dobaara call","phir call","phir karo","free nahi",
   "waqt nahi","busy hoon","baad mein","baad me","thoda baad",
+  "abhi baat nahi kar sakta","abhi nahi baat","thoda free ho jaunga",
+  "shaam ko call karo","kal call karo","aaj baad mein","thoda time do",
+  "ghar pahunch ke baat karta hoon","ghar se baat karta hoon",
+  "khana khake baat karta hoon","khana kha raha hoon",
+  "ghar pe hoon nahi abhi","ghar nahi hoon",
+  // Rajasthani
+  "thoda baad karo","baad me karo","pichhe se karo","aage karo",
+  // Hindi Devanagari
   "बाद में कॉल करो","बाद में बात करो","बिज़ी हूँ","गाड़ी चला रहा",
   "मीटिंग में हूँ","थोड़ी देर बाद","बाद में","खाली नहीं","वक्त नहीं",
+  "अभी बात नहीं","शाम को कॉल करो","थोड़ा टाइम दो",
 ];
 
-/* ── OFF-TOPIC ── */
-const OFF_TOPIC_PATTERNS = [
-  // General off-topic indicators
-  "aapka naam","aapka number","aapko kaise pata","kya hai aapka","who are you","kaun ho tum",
-  "aapko kya hak","yeh number kaisa","mera address kya","mere liye kya","mera kya number",
-  "joke sun ao","gaana sun ao","video dikhao","photo bhejo","register karo",
-  "insurance kya hai","policy kya hai","discount kya hai","offer kya hai",
-  "company ke baare mein","company ka history","company kaha pe hai",
-  "kitne machine service ho chuke","kitni call ati hain","rate kya hai",
-  "aap apna number do","mujhe callback karo","mujhe whatsapp karo",
-  "ghar par aao","mera pata likha lo","address likho","mujhe personal call karo",
-  "cricket dekhte ho","movie dekhi hai","shaadi kab hai","paisa de do",
-  "loan de do","discount de do","free service de do","samaan lao",
-  "आपका नाम","आपका नंबर","आप कौन हो","आपको कैसे पता","यह नंबर क्या है",
-  "मेरा एड्रेस क्या","मेरे लिए क्या","कंपनी के बारे में","रेट क्या है",
-  "चुटकुला सुनाओ","गाना सुनाओ","वीडियो दिखाओ","बीमा क्या है",
-  "छूट क्या है","ऑफर क्या है","आपका नंबर दो","मेरे घर आओ",
-  "मुझे कॉल करो","व्हाट्सअप भेजो","शादी कब है","पैसे दो",
-];
-
-const OFF_TOPIC_RE = buildIntentRegex(OFF_TOPIC_PATTERNS);
-
-/* ── RESCHEDULE ── */
+/* ── RESCHEDULE / DATE ── */
 const RESCHEDULE_PATTERNS = [
   "date change kar do","date badal do","date badlo","schedule badal do",
   "reschedule karo","koi aur din","dusra din","aur koi din","baad ki date",
@@ -484,16 +640,22 @@ const RESCHEDULE_PATTERNS = [
   "ek hafte baad","do din baad","teen din baad","kal karo","parso karo",
   "monday","tuesday","wednesday","thursday","friday","saturday","sunday",
   "somwar","mangalwar","budhwar","guruwar","shukrawar","shaniwar","raviwar",
-  "tarikh","reschedule","time change","kal","parso",
+  "somvaar","mangalvaar","budhvaar","guruvaar","shukravaar","shanivaar","ravivaar",
+  "samvar","mangal","budh","guru","shukra","shani","ravi","itwar",
+  "tarikh","reschedule","time change","kal","parso","tarso",
+  "aaj","aaj hi","tomorrow","today",
+  "is hafte","is week","agla hafte","agla week",
+  // Hindi Devanagari  
   "तारीख बदल दो","तारीख बदलो","शेड्यूल बदलो","रीशेड्यूल करो","कोई और दिन",
   "दूसरा दिन","अगले महीने","अगले हफ्ते","दो दिन बाद","तीन दिन बाद",
-  "एक हफ्ते बाद","कल करो","परसों करो","कल","परसों",
+  "एक हफ्ते बाद","कल करो","परसों करो","कल","परसों","तरसों",
   "सोमवार","समवार","मंगल","मंगलवार","बुध","बुधवार",
-  "गुरु","गुरुवार","शुक्र","शुक्रवार","शनि","शनिवार","रवि","रविवार","तारीख",
+  "गुरु","गुरुवार","शुक्र","शुक्रवार","शनि","शनिवार","रवि","रविवार",
+  "इतवार","ऐतवार","तारीख","आज","आज ही",
 ];
 
 /* =====================================================================
-   PRE-COMPILED INTENT REGEXES  (built once at module load)
+   PRE-COMPILED INTENT REGEXES
    ===================================================================== */
 function buildIntentRegex(patterns) {
   const escaped = patterns.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
@@ -511,7 +673,7 @@ const WORKING_FINE_RE = buildIntentRegex(WORKING_FINE_PATTERNS);
 const MONEY_ISSUE_RE  = buildIntentRegex(MONEY_ISSUE_PATTERNS);
 const CALL_LATER_RE   = buildIntentRegex(CALL_LATER_PATTERNS);
 const RESCHEDULE_RE   = buildIntentRegex(RESCHEDULE_PATTERNS);
-const STANDALONE_NAHI = /(?:^|\s)(?:nahi|nahin|नहीं|ना)(?:\s|$)/u;
+const STANDALONE_NAHI = /(?:^|\s)(?:nahi|nahin|नहीं|ना|na\b)(?:\s|$)/u;
 
 /* =====================================================================
    INTENT DETECTOR
@@ -519,6 +681,7 @@ const STANDALONE_NAHI = /(?:^|\s)(?:nahi|nahin|नहीं|ना)(?:\s|$)/u;
 function detectIntent(normText, rawText, cachedBranch = null) {
   if (!normText || normText.length === 0) return INTENT.UNCLEAR;
 
+  // Order matters — more specific first
   if (REPEAT_RE.test(normText))                                            return INTENT.REPEAT;
   if (CONFUSION_RE.test(normText))                                         return INTENT.CONFUSION;
   if (ALREADY_DONE_RE.test(normText))                                      return INTENT.ALREADY_DONE;
@@ -532,12 +695,110 @@ function detectIntent(normText, rawText, cachedBranch = null) {
   if (cachedBranch)                                                         return INTENT.PROVIDE_BRANCH;
   if (REJECT_RE.test(normText) || STANDALONE_NAHI.test(normText))         return INTENT.REJECT;
 
+  // Check if a date token is present as last resort
+  const dateToken = extractPreferredDate(rawText);
+  if (dateToken) return INTENT.RESCHEDULE;
+
   return INTENT.UNKNOWN;
 }
 
 /* =====================================================================
-   RESPONSE CATALOGUE (NLP-level; voice.service.js overrides key states)
-   All responses are formal, polite, feminine-voiced (agent: Priya)
+   SMART REPEAT RESPONSE BUILDER — Improvement #1
+   Replays the EXACT last question with varied intro
+   ===================================================================== */
+const REPEAT_INTROS = [
+  "Ji zaroor, phir se bata rahi hoon —",
+  "Bilkul ji, dobara keh rahi hoon —",
+  "Haan ji, ek baar aur suniye —",
+  "Koi baat nahi, phir se —",
+  "Zaroor, ek baar phir —",
+  "Ji, suniye ek baar aur —",
+];
+
+export function buildSmartRepeatResponse(session, name) {
+  const idx   = (session.repeatCount || 0) % REPEAT_INTROS.length;
+  const intro = REPEAT_INTROS[idx];
+  const last  = session.lastMessage || "";
+  
+  if (!last) {
+    return `${name} ji, main Priya hoon, Rajesh Motors JCB Service se — aapki machine ki service booking ke baare mein baat kar rahi thi. Kya aap iske liye taiyaar hain?`;
+  }
+  
+  // Strip any previous "Ji zaroor..." prefix to avoid nesting
+  const cleaned = last.replace(/^(Ji zaroor|Bilkul ji|Haan ji|Koi baat nahi|Zaroor),?\s*[^—]*—\s*/i, "");
+  return `${intro} ${cleaned}`;
+}
+
+/* =====================================================================
+   SMART CONFUSION RESPONSE — Improvement #2
+   Acknowledges confusion, explains purpose, re-asks clearly
+   ===================================================================== */
+export function buildSmartConfusionResponse(session) {
+  const name      = session.customerName || "ji";
+  const number    = session.machineNumber || "aapki machine";
+  const svcType   = session.serviceType   || "scheduled service";
+  const state     = session.state         || "awaiting_initial_decision";
+  const streak    = session.confusionStreak || 0;
+
+  // Full re-introduction on 2nd+ confusion
+  if (streak >= 2) {
+    return (
+      `Namaskar phir se ${name} ji. ` +
+      `Main Priya hoon — Rajesh Motors JCB Service centre ki taraf se call kar rahi hoon. ` +
+      `Aapke is number par registered machine number ${number} ki ${svcType} ki taari ka samay aa gaya hai. ` +
+      `Kya aap is baare mein baat karna chahenge? ` +
+      `Sirf haan ya nahi boliye.`
+    );
+  }
+
+  // State-aware short confusion response
+  const stateQuestion = {
+    awaiting_initial_decision:
+      `Main Rajesh Motors se hoon — machine ${number} ki service book karni thi. Kya aap interested hain?`,
+    awaiting_date:
+      `Main Priya hoon Rajesh Motors se — bas aapko ek tarikh batani hai service ke liye. Kaunsa din theek rahega?`,
+    awaiting_date_confirm:
+      `Main Priya hoon Rajesh Motors se — humne ek din select kiya tha service ke liye. Kya woh confirm karna hai?`,
+    awaiting_branch:
+      `Main Priya hoon Rajesh Motors se — bas yeh batana hai ki machine abhi kis shehar mein hai.`,
+    awaiting_reason:
+      `${name} ji, main samajhna chahti hoon — koi takleef hai toh bataiye, main madad karungi.`,
+    awaiting_service_details:
+      `${name} ji, service ki details chahiye — kab aur kahan se karwai thi?`,
+  };
+
+  const stateQ = stateQuestion[state] || stateQuestion["awaiting_initial_decision"];
+  return `${name} ji, koi baat nahi. ${stateQ}`;
+}
+
+/* =====================================================================
+   OFF-TOPIC REDIRECT — Improvement #5
+   Politely redirects to last question
+   ===================================================================== */
+export function buildOffTopicResponse(session) {
+  const name  = session.customerName || "ji";
+  const state = session.state        || "awaiting_initial_decision";
+
+  const stateQuestions = {
+    awaiting_initial_decision:
+      `${name} ji, main kuch aur nahi samajh pa rahi hoon. Main bas yeh jaanna chahti hoon — kya main aapki machine ki service is hafte book kar doon?`,
+    awaiting_date:
+      `${name} ji, sirf ek tarikh chahiye — kaunsa din aapke liye suvidhajanak rahega?`,
+    awaiting_date_confirm:
+      `${name} ji, kya jo tarikh hamne select ki hai, woh confirm kar doon?`,
+    awaiting_branch:
+      `${name} ji, ek kaam hai — machine abhi kis shehar mein hai, bas woh bataiye.`,
+    awaiting_reason:
+      `${name} ji, kya karan hai ki service abhi nahi karna? Main dekhti hoon ki kya madad ho sakti hai.`,
+    awaiting_service_details:
+      `${name} ji, pehle ki service ki details chahiye — kab aur kahan se karwai thi?`,
+  };
+
+  return stateQuestions[state] || `${name} ji, main bas itna jaanna chahti hoon — ${stateQuestions["awaiting_initial_decision"]}`;
+}
+
+/* =====================================================================
+   RESPONSE CATALOGUE (NLP-level)
    ===================================================================== */
 const R = {
   greeting: (n, model, number, svcType) =>
@@ -574,7 +835,7 @@ const R = {
     `${n} ji, aapki machine abhi kis shehar mein hai? Jaipur, Kota, Ajmer, Alwar, Sikar ya Udaipur?`,
 
   askBranchAgain: (n) =>
-    `${n} ji, shehar ka naam thoda spasht bataiye — Jaipur, Kota, Ajmer, ya Udaipur mein se kaunsa?`,
+    `${n} ji, shehar ka naam thoda spasht bataiye please — Jaipur, Kota, Ajmer, Udaipur, Sikar ya Alwar mein se kaunsa?`,
 
   confirmBooking: (n, bn, bc, d) =>
     `Bahut achcha ${n} ji! Aapki service ${bn}, ${bc} mein ${d} ko book ho gayi hai. Hamare engineer aapse sampark karenge. Dhanyavaad!`,
@@ -625,31 +886,29 @@ export function processUserInput(userText, sessionData) {
   };
 
   /* ── Global guards ── */
-  if (unknownStreak >= 3)          return result(R.tooManyUnknown(name), "ended", true);
+  if (unknownStreak >= 3) return result(R.tooManyUnknown(name), "ended", true);
 
+  /* ── REPEAT: smart replay ── */
   if (intent === INTENT.REPEAT) {
-    const lastMsg = sessionData.lastMessage || "";
-    const replay  = lastMsg
-      ? `${name} ji, dobara bata rahi hoon — ${lastMsg}`
-      : R.repeatFallback(name);
+    const replay = buildSmartRepeatResponse(sessionData, name);
     return result(replay, state, false);
   }
 
+  /* ── CONFUSION: smart contextual clarification ── */
   if (intent === INTENT.CONFUSION) {
-    // Check if the confusion is about identity / wrong machine
-    const isIdentityConfusion = /galat|wrong|kaun si machine|kiski machine|meri nahi|wrong number/i.test(normText);
+    const isIdentityConfusion = /galat|wrong|kaun si machine|kiski machine|meri nahi|wrong number|kis company|kaun hai|kon hai/i.test(normText);
     if (isIdentityConfusion) return result(R.confusionWrongMachine(name), "awaiting_initial_decision", false);
-    return result(R.confusionClarify(name), "awaiting_initial_decision", false);
+    const confMsg = buildSmartConfusionResponse(sessionData);
+    return result(confMsg, state, false);
   }
 
-  if (intent === INTENT.UNCLEAR)   return result(R.politeAskAgain(name), state, false);
+  if (intent === INTENT.UNCLEAR) return result(R.politeAskAgain(name), state, false);
 
   /* ══════════════════════════════════════════════════════════════════
      STATE MACHINE
      ══════════════════════════════════════════════════════════════════ */
   switch (state) {
 
-    /* ── STEP 2: Initial decision ── */
     case "awaiting_initial_decision": {
       if (intent === INTENT.CONFIRM)               return result(R.askDate(name), "awaiting_date", false);
       if (intent === INTENT.ALREADY_DONE)          return result(R.askAlreadyDoneDetails(name), "awaiting_service_details", false);
@@ -668,7 +927,6 @@ export function processUserInput(userText, sessionData) {
       return result(R.politeAskAgain(name), state, false);
     }
 
-    /* ── STEP 3: Reason / objection handling ── */
     case "awaiting_reason": {
       if (intent === INTENT.CONFIRM) {
         if (DRIVER_RE.test(normText))       return result(R.objectionDriverNotAvailable(name), "awaiting_date", false);
@@ -694,7 +952,6 @@ export function processUserInput(userText, sessionData) {
       return result(R.persuasionFinal(name), "awaiting_reason_persisted", false);
     }
 
-    /* ── After first persuasion attempt ── */
     case "awaiting_reason_persisted": {
       if (intent === INTENT.CONFIRM || intent === INTENT.RESCHEDULE || intent === INTENT.PROVIDE_DATE) {
         const pd = extractPreferredDate(userText);
@@ -706,18 +963,14 @@ export function processUserInput(userText, sessionData) {
       if (intent === INTENT.WORKING_FINE)          return result(R.objectionWorkingFine(name), "awaiting_date", false);
       if (intent === INTENT.MONEY_ISSUE)           return result(R.objectionMoneyIssue(name), "awaiting_date", false);
       if (intent === INTENT.CALL_LATER)            return result(R.objectionCallLater(name), "awaiting_date", false);
-      // Try to extract any date token before giving up
       const dateTry = extractPreferredDate(userText);
       if (dateTry) return result(R.confirmDate(name, resolveDate(dateTry)?.display || dateTry), "awaiting_date_confirm", false, dateTry);
       return result(R.rejected(name), "ended", true);
     }
 
-    /* ── STEP 4: Date capture ── */
     case "awaiting_date": {
       const pd = extractPreferredDate(userText);
       if (pd) return result(R.confirmDate(name, resolveDate(pd)?.display || pd), "awaiting_date_confirm", false, pd);
-
-      // CONFIRM without extracted date → re-ask explicitly (do NOT default silently)
       if (intent === INTENT.CONFIRM) {
         return result(`${name} ji, kripya ek din ka naam bataiye — jaise kal, somwar, ya 15 tarikh.`, state, false);
       }
@@ -728,59 +981,45 @@ export function processUserInput(userText, sessionData) {
       if (intent === INTENT.WORKING_FINE)              return result(R.objectionWorkingFine(name), state, false);
       if (intent === INTENT.MONEY_ISSUE)               return result(R.objectionMoneyIssue(name), state, false);
       if (intent === INTENT.CALL_LATER)                return result(R.objectionCallLater(name), state, false);
-
-      return result(`${name} ji, kaunsa din aapke liye theek rahega? Kripya kal, somwar, ya tarikh bataiye.`, state, false);
+      return result(`${name} ji, kaunsa din aapke liye theek rahega? Kal, somwar, ya koi bhi tarikh bataiye.`, state, false);
     }
 
-    /* ── Date confirmation ── */
     case "awaiting_date_confirm": {
       const date    = sessionData.preferredDate || null;
       const display = date ? resolveDate(date)?.display || date : "nirdharit tarikh";
-
       if (intent === INTENT.CONFIRM)
         return result(R.askBranch(name), "awaiting_branch", false, date);
-
       if (intent === INTENT.REJECT) {
         if (/abhi|shayad|maybe|later|thoda time|अभी|शायद|बाद में|थोड़ा/i.test(userText)) {
           return result(R.objectionCallLater(name), "awaiting_date", false, null);
         }
         return result(R.askDate(name), "awaiting_date", false, null);
       }
-
       if (intent === INTENT.RESCHEDULE)
         return result(R.askDate(name), "awaiting_date", false, null);
-
-      // Customer gives a new date inline
       const newDate = extractPreferredDate(userText);
       if (newDate) {
         const newDisplay = resolveDate(newDate)?.display || newDate;
         return result(R.confirmDate(name, newDisplay), state, false, newDate);
       }
-
       return result(R.confirmDate(name, display), state, false, date);
     }
 
-    /* ── STEP 5: Branch matching ── */
     case "awaiting_branch": {
       const branch  = matchBranch(userText);
       const date    = sessionData.preferredDate || null;
       const display = date ? resolveDate(date)?.display || date : "nirdharit tarikh";
-
       if (!date && intent !== INTENT.REJECT)
         return result(R.askDate(name), "awaiting_date", false);
-
       if (branch)
         return result(R.confirmBooking(name, branch.name, branch.city, display), "ended", true, date, branch);
-
       if (intent === INTENT.REJECT) {
         if (date) return result(R.persuasionFinal(name), state, false, date);
         return result(R.askBranch(name), state, false);
       }
-
       return result(R.askBranchAgain(name), state, false, date);
     }
 
-    /* ── STEP 6: Already done details ── */
     case "awaiting_service_details":
       return result(R.alreadyDoneSaved(name), "ended", true);
 
