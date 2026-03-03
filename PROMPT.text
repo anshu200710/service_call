@@ -47,3 +47,189 @@ english and hindi all keywords understand properly and rural areas wrong pronoun
 
 
 
+// services/aiAgent.js
+import fetch from "node-fetch";
+
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+
+export const SYSTEM_PROMPT = `
+You are a professional, polite and warm Hindi-speaking service reminder call agent from Rajesh Motors JCB.
+
+Your job:
+- Call customers about upcoming service due.
+- Speak like a real human.
+- Keep responses short and conversational.
+- Ask one question at a time.
+- If customer agrees, ask for preferred service date.
+- Then ask for city/location.
+- Confirm details clearly.
+- If customer asks for human agent, respond politely.
+
+Tone:
+- Friendly
+- Respectful
+- Natural Indian Hindi tone
+- Not robotic
+
+Do NOT generate long paragraphs.
+Do NOT ask multiple questions at once.
+`;
+
+export async function generateAIResponse(messages) {
+  try {
+    const response = await fetch(GROQ_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          ...messages
+        ],
+        temperature: 0.6
+      })
+    });
+
+    const data = await response.json();
+
+    return data.choices?.[0]?.message?.content || "Maaf kijiye, mujhe samajh nahi aaya.";
+  } catch (error) {
+    console.error("Groq AI Error:", error);
+    return "System error ho gaya.";
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+// routes/aiVoiceRoutes.js
+import express from "express";
+import twilio from "twilio";
+import { generateAIResponse } from "../utils/aiAgent.js";
+import { callDataStore } from "./outbound.js";
+
+const router = express.Router();
+const VoiceResponse = twilio.twiml.VoiceResponse;
+
+// Temporary in-memory conversation store
+const conversationStore = new Map();
+
+
+// ============================
+// INITIAL VOICE ENTRY
+// ============================
+router.post("/", async (req, res) => {
+  const twiml = new VoiceResponse();
+  const callSid = req.body.CallSid;
+
+  const callData = callDataStore.get(callSid);
+
+  if (!callData) {
+    twiml.say("System error.");
+    twiml.hangup();
+    return res.type("text/xml").send(twiml.toString());
+  }
+
+  // Initialize conversation memory
+  conversationStore.set(callSid, [
+    {
+      role: "user",
+      content: `Customer name is ${callData.customerName}.
+      Machine model ${callData.machineModel}.
+      Machine number ${callData.machineNumber}.
+      Service type ${callData.serviceType}.
+      Due date ${callData.dueDate}.
+      Start the reminder conversation.`
+    }
+  ]);
+
+  const aiReply = await generateAIResponse(
+    conversationStore.get(callSid)
+  );
+
+  conversationStore.get(callSid).push({
+    role: "assistant",
+    content: aiReply
+  });
+
+  const gather = twiml.gather({
+    input: "speech",
+    language: "en-IN",
+    enhanced: true,
+    speechTimeout: "auto",
+    action: "/voice/process",
+    method: "POST"
+  });
+
+  gather.say({ voice: "Polly.Aditi", language: "en-IN" }, aiReply);
+
+  return res.type("text/xml").send(twiml.toString());
+});
+
+
+// ============================
+// PROCESS USER SPEECH
+// ============================
+router.post("/process", async (req, res) => {
+  const twiml = new VoiceResponse();
+  const callSid = req.body.CallSid;
+  const speech = (req.body.SpeechResult || "").trim();
+
+  if (!speech) {
+    twiml.redirect("/voice");
+    return res.type("text/xml").send(twiml.toString());
+  }
+
+  const messages = conversationStore.get(callSid) || [];
+
+  messages.push({ role: "user", content: speech });
+
+  const aiReply = await generateAIResponse(messages);
+
+  messages.push({ role: "assistant", content: aiReply });
+
+  conversationStore.set(callSid, messages);
+
+  // 🔹 Basic extraction logic
+  let serviceDate = null;
+  let city = null;
+
+  if (speech.match(/\d{1,2}/)) {
+    serviceDate = speech;
+  }
+
+  if (speech.length < 30 && !speech.match(/\d/)) {
+    city = speech;
+  }
+
+  // TODO: Save to DB here
+  // Example:
+  // await ServiceModel.create({ callSid, serviceDate, city });
+
+  const gather = twiml.gather({
+    input: "speech",
+    language: "en-IN",
+    enhanced: true,
+    speechTimeout: "auto",
+    action: "/voice/process",
+    method: "POST"
+  });
+
+  gather.say({ voice: "Polly.Aditi", language: "en-IN" }, aiReply);
+
+  return res.type("text/xml").send(twiml.toString());
+});
+
+export default router;

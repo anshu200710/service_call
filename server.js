@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 import outboundRoutes from './routes/outbound.js';
 import voiceRoutes from './routes/voice.js';
+import aivoiceRoutes from './routes/aiVoiceRoutes.js';
 import connectDB from './config/db.js';
 
 const app = express();
@@ -20,6 +21,8 @@ app.use(express.json());
 
 app.use('/outbound', outboundRoutes)
 app.use('/voice', voiceRoutes)
+// app.use('/voice', aivoiceRoutes)
+
 
 
 // Routes
