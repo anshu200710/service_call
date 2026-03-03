@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 import outboundRoutes from './routes/outbound.js';
 import voiceRoutes from './routes/voice.js';
-import aivoiceRoutes from './routes/aiVoiceRoutes.js';
+// import aivoiceRoutes from './routes/aiVoiceRoutes.js';
 import connectDB from './config/db.js';
 
 const app = express();
